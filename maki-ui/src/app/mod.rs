@@ -91,7 +91,7 @@ const FLASH_REWIND: &str = "Press esc again to rewind...";
 const AUTH_EXPIRED_MSG: &str =
     "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
 const FLASH_NO_PLAN: &str = "No plan file";
-const FAST_UNSUPPORTED_MSG: &str = "Fast mode requires an Anthropic Opus 4.6+ model (API only)";
+const FAST_UNSUPPORTED_MSG: &str = "Fast mode requires Anthropic Opus 4.6+ (API only) or eligible Codex subscription models (ChatGPT OAuth; not OpenAI API keys)";
 const THINKING_UNSUPPORTED_MSG: &str = "Thinking requires a model that supports it";
 const FAST_ON_MSG: &str = "Fast mode: on";
 const FAST_OFF_MSG: &str = "Fast mode: off";
@@ -414,6 +414,7 @@ impl App {
             return Err(FAST_UNSUPPORTED_MSG.into());
         }
         self.state.fast = fast;
+        self.state.pending_fast = false;
         Ok(())
     }
 
@@ -1414,7 +1415,7 @@ impl App {
                 vec![]
             }
             "/fast" => {
-                let fast = !self.state.fast;
+                let fast = !(self.state.fast || self.state.pending_fast);
                 match self.set_fast(fast) {
                     Ok(()) => self.flash(if fast { FAST_ON_MSG } else { FAST_OFF_MSG }.into()),
                     Err(msg) => self.flash(msg),

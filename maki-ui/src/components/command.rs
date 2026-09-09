@@ -107,7 +107,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     },
     BuiltinCommand {
         name: "/fast",
-        description: "Toggle Anthropic fast mode (Opus only)",
+        description: "Toggle fast mode for Anthropic Opus (API) or eligible Codex subscription models (ChatGPT OAuth)",
         max_args: 0,
         bang: false,
     },

@@ -88,7 +88,7 @@ pub fn generate() -> String {
     .unwrap();
     writeln!(
         out,
-        "- **`/fast`**: Anthropic fast mode (Opus only; ignored on other models). Config: `always_fast = true`."
+        "- **`/fast`**: Fast mode for Anthropic Opus (API) or eligible Codex subscription models (ChatGPT OAuth; not OpenAI API keys; ignored on other models). Config: `always_fast = true`."
     )
     .unwrap();
     writeln!(

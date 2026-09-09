@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use maki_config::{Effect, ModelPolicy};
+use maki_providers::model::FastSupport;
 use maki_providers::provider::adjust_model;
 use maki_providers::{Model, RequestOptions, ThinkingConfig, Timeouts, TokenUsage, settle_session};
 use maki_storage::StateDir;
@@ -26,6 +27,7 @@ pub(crate) struct SessionState {
     pub warnings: Vec<String>,
     pub thinking: ThinkingConfig,
     pub fast: bool,
+    pub pending_fast: bool,
     pub workflow: bool,
 }
 
@@ -90,6 +92,8 @@ impl SessionState {
 
         // Saved model may differ from the live one (updated, removed, etc), so
         // reconcile before anyone reads the toggles or prices history with them.
+        let pending_fast =
+            session.meta.fast && model.supports_fast_override == Some(FastSupport::Pending);
         let (thinking, fast) = clamp(session.meta.thinking.into(), session.meta.fast, &model);
         let token_usage = session.token_usage;
         let cost = settle_session(&token_usage, session.usage_by_model_mut(), &model, fast);
@@ -98,6 +102,7 @@ impl SessionState {
         Self {
             thinking,
             fast,
+            pending_fast,
             workflow: session.meta.workflow,
             session: Arc::new(session),
             model,
@@ -115,7 +120,9 @@ impl SessionState {
     }
 
     pub fn update_model(&mut self, model: &Model) {
-        (self.thinking, self.fast) = clamp(self.thinking, self.fast, model);
+        let fast = self.fast || (self.pending_fast && self.model.spec() == model.spec());
+        self.pending_fast = fast && model.supports_fast_override == Some(FastSupport::Pending);
+        (self.thinking, self.fast) = clamp(self.thinking, fast, model);
         self.session_mut().set_model(model.spec());
         self.model = model.clone();
     }
@@ -284,6 +291,40 @@ mod tests {
 
         assert_eq!(state.fast, fast, "{FAST_FLAG_LOST}");
         state.cost
+    }
+
+    #[test_case(FastSupport::Pending, false, true ; "pending_preserves_saved_intent")]
+    #[test_case(FastSupport::Supported, true, false ; "supported_restores_fast")]
+    #[test_case(FastSupport::Unsupported, false, false ; "unsupported_clears_saved_intent")]
+    fn resume_fast_support(support: FastSupport, fast: bool, pending: bool) {
+        let mut session = session_with_counters();
+        session.meta.fast = true;
+        let mut model = test_model();
+        model.supports_fast_override = Some(support);
+        let state = resumed(session, &model);
+        assert_eq!((state.fast, state.pending_fast), (fast, pending));
+    }
+
+    #[test_case(FastSupport::Supported, false, true, false ; "discovery_enables_fast")]
+    #[test_case(FastSupport::Unsupported, false, false, false ; "discovery_rejects_fast")]
+    #[test_case(FastSupport::Pending, false, false, true ; "pending_refresh_preserves_intent")]
+    #[test_case(FastSupport::Supported, true, false, false ; "switch_discards_pending_intent")]
+    #[test_case(FastSupport::Pending, true, false, false ; "switch_to_pending_discards_intent")]
+    fn pending_fast_model_update(support: FastSupport, switch: bool, fast: bool, pending: bool) {
+        let mut session = session_with_counters();
+        session.meta.fast = true;
+        let mut model = test_model();
+        model.supports_fast_override = Some(FastSupport::Pending);
+        let mut state = resumed(session, &model);
+        if switch {
+            model.id = UNRESOLVABLE_MODEL.into();
+        }
+        model.supports_fast_override = Some(support);
+        state.update_model(&model);
+        assert_eq!((state.fast, state.pending_fast), (fast, pending));
+        model.supports_fast_override = Some(FastSupport::Supported);
+        state.update_model(&model);
+        assert_eq!(state.fast, fast || pending);
     }
 
     #[test]

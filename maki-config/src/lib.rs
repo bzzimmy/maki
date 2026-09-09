@@ -195,7 +195,7 @@ pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[
         default: ConfigValue::Bool(false),
         min: None,
         env: None,
-        description: "Start every session with Anthropic fast mode (Opus only; ignored otherwise)",
+        description: "Start every session with fast mode for Anthropic Opus (API) or eligible Codex subscription models (ChatGPT OAuth; ignored otherwise)",
     },
     ConfigField {
         name: "always_workflow",

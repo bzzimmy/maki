@@ -233,6 +233,7 @@ mod tests {
             supports_tool_examples_override: None,
             thinking_override: None,
             supports_vision_override: None,
+            supports_fast_override: None,
             pricing: ModelPricing {
                 input: input_rate,
                 ..ModelPricing::ZERO
