@@ -713,6 +713,7 @@ mod tests {
             tier: ModelTier::Medium,
             family: ModelFamily::Gemini,
             supports_vision_override: Some(true),
+            supports_fast_override: None,
             supports_tool_examples_override: None,
             thinking_override: None,
             pricing: ModelPricing::default(),

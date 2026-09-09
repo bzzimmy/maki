@@ -129,7 +129,7 @@ impl App {
                 self.recoverable_queue.clone()
             },
             thinking: Some(state.thinking.into()),
-            fast: state.fast,
+            fast: state.fast || state.pending_fast,
             workflow: state.workflow,
             yolo: self.permissions.persisted_yolo(),
         }
@@ -309,7 +309,7 @@ impl App {
         session.meta = SessionMeta {
             mode: Some(self.state.mode.into()),
             thinking: Some(self.state.thinking.into()),
-            fast: self.state.fast,
+            fast: self.state.fast || self.state.pending_fast,
             workflow: self.state.workflow,
             plan_path: None,
             plan_written: false,
@@ -419,5 +419,41 @@ impl App {
         };
         let loaded = self.apply_loaded_session(session, &self.state.model.clone());
         vec![Action::LoadSession(Box::new(loaded))]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::tests::test_app;
+    use crate::components::command::ParsedCommand;
+    use maki_providers::model::FastSupport;
+    use test_case::test_case;
+
+    #[test_case(false ; "pending_survives_snapshot_and_inheritance")]
+    #[test_case(true ; "explicit_off_cancels_pending")]
+    fn pending_fast_persistence(cancel: bool) {
+        let mut app = test_app();
+        app.state.model.supports_fast_override = Some(FastSupport::Pending);
+        app.state.fast = false;
+        app.state.pending_fast = true;
+        if cancel {
+            app.execute_command(
+                ParsedCommand {
+                    name: "/fast".into(),
+                    args: String::new(),
+                    bang: false,
+                },
+                0,
+            );
+        }
+        assert!(!app.state.fast);
+        assert_eq!(app.build_meta().fast, !cancel);
+        assert_eq!(app.blank_session().meta.fast, !cancel);
+        let mut model = app.state.model.clone();
+        model.supports_fast_override = Some(FastSupport::Supported);
+        app.update_model(&model);
+        assert_eq!(app.state.fast, !cancel);
+        assert!(!app.state.pending_fast);
+        assert_eq!(app.build_meta().fast, !cancel);
     }
 }

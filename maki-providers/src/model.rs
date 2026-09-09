@@ -326,6 +326,13 @@ pub struct ThinkingOption {
     pub tokens: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FastSupport {
+    Pending,
+    Supported,
+    Unsupported,
+}
+
 #[derive(Debug, Clone)]
 pub struct Model {
     pub id: String,
@@ -338,6 +345,7 @@ pub struct Model {
     /// back to discovery, then the provider manifest.
     pub thinking_override: Option<ThinkingSupport>,
     pub supports_vision_override: Option<bool>,
+    pub supports_fast_override: Option<FastSupport>,
     pub pricing: ModelPricing,
     /// Discovery reported an explicit all-zero price. Distinct from a zero
     /// `pricing`, which also covers "no price is known".
@@ -396,6 +404,7 @@ impl Model {
             supports_tool_examples_override: None,
             thinking_override: None,
             supports_vision_override: None,
+            supports_fast_override: None,
             pricing,
             discovered_free: discovered_pricing.is_some_and(ModelPricing::is_zero),
             max_output_tokens,
@@ -420,6 +429,7 @@ impl Model {
             supports_tool_examples_override: None,
             thinking_override: ThinkingSupport::from_flags(meta.supports_thinking, false),
             supports_vision_override: meta.supports_vision,
+            supports_fast_override: None,
             pricing: meta.pricing.unwrap_or_default(),
             discovered_free: false,
             max_output_tokens: Some(max_output_tokens),
@@ -544,14 +554,22 @@ impl Model {
         self.output_tokens().map(|n| n / 2)
     }
 
-    /// A model supports fast mode exactly when it carries fast-tier pricing, so
-    /// capability and billing can never disagree. The provider gate keeps fast
-    /// mode to Anthropic-based providers, resolved through the base manifest so
-    /// oauth scripts keep it; Bedrock separately ignores `opts.fast` at request
-    /// time.
+    /// A provider that knows better speaks through `supports_fast_override`.
+    /// Otherwise a model supports fast mode exactly when it carries fast-tier
+    /// pricing, so capability and billing can never disagree. The provider gate
+    /// keeps fast mode to Anthropic-based providers, resolved through the base
+    /// manifest so oauth scripts keep it; Bedrock separately ignores
+    /// `opts.fast` at request time.
     pub fn supports_fast(&self) -> bool {
-        self.pricing.fast.is_some()
-            && ManifestRegistry::for_slug(&self.provider).is_some_and(|m| m.slug == FAST_PROVIDER)
+        match self.supports_fast_override {
+            Some(FastSupport::Supported) => true,
+            Some(FastSupport::Pending | FastSupport::Unsupported) => false,
+            None => {
+                self.pricing.fast.is_some()
+                    && ManifestRegistry::for_slug(&self.provider)
+                        .is_some_and(|m| m.slug == FAST_PROVIDER)
+            }
+        }
     }
 
     pub fn spec(&self) -> String {
@@ -1339,9 +1357,35 @@ mod tests {
         assert_eq!(model.supports_fast(), expected);
     }
 
-    /// Fast mode is Anthropic-only, so a fast rate that lands on anyone else is
-    /// dead weight: nobody can turn it on, and an `always_fast` carried in from
-    /// config must not quietly reprice the session with it.
+    #[test_case("google/gemini-2.5-pro", Some(FastSupport::Supported), true ; "override_enables_without_fast_pricing")]
+    #[test_case("anthropic/claude-opus-5", Some(FastSupport::Unsupported), false ; "override_disables_native_support")]
+    #[test_case("anthropic/claude-opus-5", None, true ; "default_preserves_native_support")]
+    #[test_case("google/gemini-2.5-pro", None, false ; "default_preserves_unsupported")]
+    #[test_case("anthropic/claude-opus-5", Some(FastSupport::Pending), false ; "pending_disables_native_support")]
+    fn supports_fast_respects_override(
+        spec: &str,
+        fast_override: Option<FastSupport>,
+        expected: bool,
+    ) {
+        let mut model = Model::from_spec(spec).unwrap();
+        model.supports_fast_override = fast_override;
+        assert_eq!(model.supports_fast(), expected);
+    }
+
+    #[test_case("google/gemini-2.5-pro" ; "non_anthropic")]
+    #[test_case("anthropic/claude-sonnet-5" ; "anthropic")]
+    fn fast_override_without_fast_pricing_uses_standard_rates(spec: &str) {
+        let mut model = Model::from_spec(spec).unwrap();
+        model.supports_fast_override = Some(FastSupport::Supported);
+        assert!(model.supports_fast());
+        assert!(model.pricing.fast.is_none());
+        assert!(!model.pricing.is_zero());
+        assert_eq!(
+            model.list_cost(&COUNTERS, true),
+            Some(COUNTERS.estimate(&model.pricing, false))
+        );
+    }
+
     #[test]
     fn fast_pricing_on_a_non_anthropic_model_stays_inert() {
         let mut model = Model::from_base(

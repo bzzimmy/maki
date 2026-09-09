@@ -503,6 +503,28 @@ fn merge_batch(
     available.store(Some(Arc::new(merged)));
 }
 
+fn resolve_discovered_model(model_slot: &ArcSwap<ModelSlot>, timeouts: Timeouts) {
+    let spec = model_slot.load().model.spec();
+    let mut resolved = match Model::from_spec(&spec) {
+        Ok(m) => m,
+        Err(e) => {
+            warn!(spec = %spec, error = %e, "failed to resolve model after discovery");
+            return;
+        }
+    };
+    let provider = match from_model(&mut resolved, timeouts) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(spec = %spec, error = %e, "failed to create provider after discovery");
+            return;
+        }
+    };
+    model_slot.store(Arc::new(ModelSlot {
+        model: resolved,
+        provider: Arc::from(provider),
+    }));
+}
+
 fn spawn_model_fetch(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     timeouts: Timeouts,
@@ -515,27 +537,7 @@ fn spawn_model_fetch(
     let model_slot = Arc::clone(model_slot);
     let task = smol::spawn(async move {
         let warn_tx = warn_tx_bg;
-        let done = Box::new(move || {
-            let spec = model_slot.load().model.spec();
-            let mut resolved = match Model::from_spec(&spec) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!(spec = %spec, error = %e, "failed to resolve model after discovery");
-                    return;
-                }
-            };
-            let provider = match from_model(&mut resolved, timeouts) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!(spec = %spec, error = %e, "failed to create provider after discovery");
-                    return;
-                }
-            };
-            model_slot.store(Arc::new(ModelSlot {
-                model: resolved,
-                provider: Arc::from(provider),
-            }));
-        });
+        let done = Box::new(move || resolve_discovered_model(&model_slot, timeouts));
         fetch_all_models(
             &policy,
             |batch| merge_batch(&bg, batch, &warn_tx),
@@ -885,6 +887,8 @@ impl<'t> EventLoop<'t> {
         for rt in &mut self.sessions {
             if rt.app.state.session.model != spec
                 || rt.app.state.model.context_window != slot_model.model.context_window
+                || rt.app.state.model.supports_fast_override
+                    != slot_model.model.supports_fast_override
             {
                 rt.app.update_model(&slot_model.model);
                 dirty = Dirty::YES;
@@ -1677,12 +1681,16 @@ impl<'t> EventLoop<'t> {
         let available = Arc::clone(&self.ctx.available_models);
         let warn_tx = self.warn_tx.clone();
         let policy = Arc::clone(&self.ctx.model_policy);
+        let model_slot = Arc::clone(&self.ctx.model_slot);
+        let timeouts = self.ctx.timeouts;
         available.store(None);
         smol::spawn(async move {
             fetch_all_models(
                 &policy,
                 |batch| merge_batch(&available, batch, &warn_tx),
-                None,
+                Some(Box::new(move || {
+                    resolve_discovered_model(&model_slot, timeouts)
+                })),
             )
             .await;
         })

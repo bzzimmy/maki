@@ -1135,6 +1135,7 @@ mod tests {
             supports_tool_examples_override: None,
             thinking_override: None,
             supports_vision_override: None,
+            supports_fast_override: None,
             pricing: ModelPricing::default(),
             discovered_free: false,
             max_output_tokens: None,
