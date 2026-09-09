@@ -201,7 +201,11 @@ pub enum Command {
         action: AuthAction,
     },
     /// List all available models
-    Models,
+    Models {
+        /// Refetch the models.dev catalog, ignoring its 24h cache
+        #[arg(long)]
+        refresh: bool,
+    },
     /// Manage sessions
     Session {
         #[command(subcommand)]

@@ -537,7 +537,7 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
     Ok(())
 }
 
-pub fn models(no_plugins: bool, no_jit: bool) -> Result<()> {
+pub fn models(no_plugins: bool, no_jit: bool, refresh: bool) -> Result<()> {
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);
 
@@ -551,6 +551,13 @@ pub fn models(no_plugins: bool, no_jit: bool) -> Result<()> {
         |host, names, warnings| load_effective_config(host, no_plugins, &cwd, names, warnings),
     )?;
     super::report_warnings(warnings);
+
+    if refresh {
+        match maki_providers::refresh_catalog() {
+            Ok(()) => eprintln!("models.dev catalog has been refreshed"),
+            Err(e) => eprintln!("warning: catalog refresh failed, keeping existing cache: {e}"),
+        }
+    }
 
     smol::block_on(fetch_all_models(
         &config.provider.model_policy,

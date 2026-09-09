@@ -477,6 +477,24 @@ pub fn warm_catalog() {
     init_shared_catalog_if_needed();
 }
 
+/// Force-refetches the models.dev catalog; failures keep the stale catalog and cache.
+pub fn refresh_catalog() -> Result<(), AgentError> {
+    let state_dir = match StateDir::resolve() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "failed to resolve state dir");
+            StateDir::from_path("".into())
+        }
+    };
+    let client = catalog_client();
+    let index = smol::block_on(fetch_remote_catalog_async(&client))?;
+    smol::block_on(save_cached_catalog_async(&index));
+    let data = CatalogData::from_index(index, &state_dir);
+    let catalog = SHARED_CATALOG.get_or_init(|| Mutex::new(CatalogData::empty(state_dir)));
+    *catalog.lock().unwrap() = data;
+    Ok(())
+}
+
 /// Returns the list of all providers in alphabetical order.
 pub fn catalog_providers() -> Vec<ProviderData> {
     let guard = init_shared_catalog_if_needed().lock().unwrap();
@@ -617,6 +635,16 @@ fn determine_catalog_format(npm: &str) -> EndpointType {
     }
 }
 
+fn catalog_client() -> HttpClient {
+    isahc::HttpClient::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .low_speed_timeout(1, Duration::from_secs(30))
+        // curl carries http2 for OTLP.
+        .version_negotiation(VersionNegotiation::http11())
+        .build()
+        .expect("failed to build catalog HTTP client")
+}
+
 // Try cache first, then fetch from remote.
 fn init_catalog_blocking() -> CatalogData {
     let state_dir = match StateDir::resolve() {
@@ -631,13 +659,7 @@ fn init_catalog_blocking() -> CatalogData {
         return CatalogData::from_index(index, &state_dir);
     }
 
-    let client = isahc::HttpClient::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .low_speed_timeout(1, Duration::from_secs(30))
-        // curl carries http2 for OTLP.
-        .version_negotiation(VersionNegotiation::http11())
-        .build()
-        .expect("failed to build catalog HTTP client");
+    let client = catalog_client();
 
     match smol::block_on(fetch_remote_catalog_async(&client)) {
         Ok(index) => {
