@@ -17,6 +17,7 @@ const FUNCTIONS_PREFIX: &str = "functions.";
 /// least 1024) and rejects a request where the two are equal, so clamping the
 /// cap all the way down to 1024 would trade an overflow for a 400.
 const MIN_OUTPUT_TOKENS: u32 = 4096;
+const OUTPUT_TOKEN_HEADROOM: u32 = 4096;
 
 /// GPT models sometimes emit `functions.<name>`, a Codex training habit.
 /// Stripped here at the provider boundary so no raw name enters the agent;
@@ -102,7 +103,12 @@ impl From<StreamError> for AgentError {
 /// better number whenever it is larger.
 fn clamped_output_tokens(model: &Model, prompt_tokens: u32) -> Option<u32> {
     let max_output = model.max_output_tokens?;
-    let remaining = model.context_window.saturating_sub(prompt_tokens);
+    // The prompt count is approximate, especially after tool results. Filling
+    // the window exactly can turn a small underestimate into forced compaction.
+    let remaining = model
+        .context_window
+        .saturating_sub(prompt_tokens)
+        .saturating_sub(OUTPUT_TOKEN_HEADROOM);
     // The `min` keeps the floor from raising the cap over what the model
     // declared, since it would reject a number it never offered.
     (max_output > remaining).then(|| remaining.max(MIN_OUTPUT_TOKENS).min(max_output))
@@ -261,6 +267,8 @@ mod tests {
     const BIG_MAX_OUTPUT: u32 = 100_000;
     const SMALL_MAX_OUTPUT: u32 = 2_048;
     const SMALL_PROMPT: u32 = 1_000;
+    const ESTIMATED_TOOL_PROMPT: u32 = 8_582;
+    const ACTUAL_TOOL_PROMPT: u32 = 10_000;
     /// One token more than the window can spare for `BIG_MAX_OUTPUT`.
     const CROWDING_PROMPT: u32 = WINDOW - BIG_MAX_OUTPUT + 1;
 
@@ -272,7 +280,7 @@ mod tests {
     }
 
     #[test_case(Some(BIG_MAX_OUTPUT), SMALL_PROMPT, None; "cap_fits_inside_remaining_window")]
-    #[test_case(Some(BIG_MAX_OUTPUT), CROWDING_PROMPT, Some(WINDOW - CROWDING_PROMPT); "cap_exceeds_remaining_window")]
+    #[test_case(Some(BIG_MAX_OUTPUT), CROWDING_PROMPT, Some(WINDOW - CROWDING_PROMPT - OUTPUT_TOKEN_HEADROOM); "cap_exceeds_remaining_window")]
     #[test_case(Some(BIG_MAX_OUTPUT), WINDOW + 1, Some(MIN_OUTPUT_TOKENS); "prompt_over_window_floors_at_minimum")]
     #[test_case(Some(SMALL_MAX_OUTPUT), WINDOW + 1, Some(SMALL_MAX_OUTPUT); "floor_never_exceeds_the_model_cap")]
     #[test_case(None, CROWDING_PROMPT, None; "provider_chosen_cap_is_left_alone")]
@@ -285,6 +293,14 @@ mod tests {
             clamped_output_tokens(&model_with(max_output_tokens), prompt_tokens),
             expected
         );
+    }
+
+    #[test]
+    fn full_window_output_cap_leaves_room_for_underestimated_tool_results() {
+        let model = model_with(Some(WINDOW));
+        let output = clamped_output_tokens(&model, ESTIMATED_TOOL_PROMPT).unwrap();
+        assert!(ACTUAL_TOOL_PROMPT + output <= WINDOW);
+        assert!(output > BIG_MAX_OUTPUT);
     }
 
     #[test]
