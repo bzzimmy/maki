@@ -802,6 +802,7 @@ impl CopilotModel {
                 .any(|effort| effort == dialect::OFF),
             reasoning_efforts,
             adaptive_thinking: self.capabilities.supports.adaptive_thinking,
+            endpoint: self.endpoint(),
         }
     }
 
@@ -908,6 +909,7 @@ struct CopilotModelInfo {
     reasoning_efforts: Vec<Effort>,
     reasoning_off: bool,
     adaptive_thinking: bool,
+    endpoint: Endpoint,
 }
 
 #[derive(Deserialize)]
@@ -1046,6 +1048,21 @@ fn anthropic_messages(messages: &[Message]) -> Value {
             })
             .collect(),
     )
+}
+
+pub(crate) fn thinking_efforts(model: &Model) -> Option<Vec<Effort>> {
+    let info = crate::model_registry::provider_info::<CopilotModelInfo>(SLUG, &model.id);
+    match info
+        .as_ref()
+        .map_or_else(|| guess_endpoint(&model.id), |info| info.endpoint)
+    {
+        Endpoint::ChatCompletions => None,
+        Endpoint::Messages => Some(model.anthropic_thinking_efforts()),
+        Endpoint::Responses => Some(info.as_ref().map_or_else(
+            || dialect::PREFER_HIGH.supported.to_vec(),
+            |info| effort_dialect(info).supported.to_vec(),
+        )),
+    }
 }
 
 fn effort_dialect(info: &CopilotModelInfo) -> EffortDialect<'_> {
@@ -1231,6 +1248,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(model.model_info().supports_thinking, Some(expected));
+        assert_eq!(model.reasoning_info().endpoint, model.endpoint());
     }
 
     #[test_case(ModelTier::Weak, "gpt-5.6-luna"; "weak defaults to luna")]
@@ -1329,6 +1347,7 @@ mod tests {
             reasoning_efforts: vec![Effort::Low, Effort::Medium, Effort::High],
             reasoning_off: true,
             adaptive_thinking: false,
+            endpoint: Endpoint::Responses,
         };
         let dialect = effort_dialect(&info);
 

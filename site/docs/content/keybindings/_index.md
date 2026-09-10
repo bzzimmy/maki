@@ -20,6 +20,7 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 | `Ctrl+O` | Open plan in editor |
 | `Ctrl+T` | Toggle plan panel |
 | `Ctrl+M` | Model picker |
+| `Shift+Tab` | Cycle thinking level |
 
 ## Editing
 

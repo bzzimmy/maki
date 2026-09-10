@@ -33,7 +33,7 @@ use crate::components::command::{CommandAction, CommandPalette, ParsedCommand};
 use crate::components::file_picker::{FilePickerModal, FilePickerModalAction};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox, Submission};
-use crate::components::keybindings::key;
+use crate::components::keybindings::{key, normalize_key};
 use crate::components::login_picker::{LoginPicker, LoginPickerAction};
 use crate::components::lua_float::FloatManager;
 use crate::components::mcp_picker::{McpPicker, McpPickerAction};
@@ -69,6 +69,7 @@ use maki_providers::{ContentBlock, Message, Model, ThinkingConfig, add_cost};
 use maki_storage::StateDir;
 use maki_storage::input_history::InputHistory;
 use maki_storage::model::persist_model;
+use maki_storage::thinking::persist_thinking;
 
 use crate::storage_writer::StorageWriter;
 use ratatui::layout::Position;
@@ -406,6 +407,9 @@ impl App {
         }
         self.state.thinking =
             ThinkingConfig::parse(input.trim(), self.state.thinking).map_err(str::to_owned)?;
+        if let Err(error) = persist_thinking(&self.storage, &self.state.thinking.into()) {
+            tracing::warn!(%error, thinking = %self.state.thinking, "failed to persist thinking preference");
+        }
         Ok(self.state.thinking)
     }
 
@@ -830,6 +834,21 @@ impl App {
             BuiltinAction::NextChat => {
                 self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
             }
+            BuiltinAction::CycleThinking => {
+                let levels = self.state.model.thinking_levels();
+                let next = levels
+                    .iter()
+                    .position(|thinking| *thinking == self.state.thinking)
+                    .map_or(0, |index| (index + 1) % levels.len());
+                if let Some(thinking) = levels.get(next) {
+                    match self.set_thinking(&thinking.to_string()) {
+                        Ok(thinking) => self.flash(format!("Thinking: {thinking}")),
+                        Err(msg) => self.flash(msg),
+                    }
+                } else {
+                    self.flash(THINKING_UNSUPPORTED_MSG.into());
+                }
+            }
             BuiltinAction::ModelPicker => {
                 self.model_picker.open(&self.state.model.spec());
                 return vec![Action::RefreshModels];
@@ -870,6 +889,10 @@ impl App {
             return vec![];
         }
 
+        if key::CYCLE_THINKING.matches(key) {
+            return self.run_builtin(BuiltinAction::CycleThinking);
+        }
+
         if !self.is_main_chat() {
             return match key.code {
                 KeyCode::Tab if !self.is_bash_input() => self.toggle_mode(),
@@ -892,6 +915,7 @@ impl App {
     }
 
     fn dispatch_override(&self, key: KeyEvent) -> bool {
+        let key = normalize_key(key);
         let snap = self.keymap_reader.load();
         for entry in &snap.entries {
             if entry.key == key.code

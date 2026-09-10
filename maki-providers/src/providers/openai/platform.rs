@@ -473,6 +473,23 @@ fn plan_dialect(model_id: &str) -> &'static EffortDialect<'static> {
     }
 }
 
+pub(crate) fn thinking_efforts(model: &Model) -> Vec<Effort> {
+    let discovered = model_registry::provider_info::<PlanModelInfo>(CONFIG.slug, &model.id);
+    resolved_plan_dialect(&model.id, discovered.as_deref())
+        .unwrap_or(dialect::STANDARD)
+        .supported
+        .to_vec()
+}
+
+fn resolved_plan_dialect<'a>(
+    model_id: &str,
+    discovered: Option<&'a PlanModelInfo>,
+) -> Option<EffortDialect<'a>> {
+    discovered
+        .map(PlanModelInfo::dialect)
+        .or_else(|| is_codex_model(model_id).then(|| plan_dialect(model_id).clone()))
+}
+
 impl Provider for OpenAi {
     fn stream_message<'a>(
         &'a self,
@@ -489,10 +506,7 @@ impl Provider for OpenAi {
             let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
 
             let discovered = model_registry::provider_info::<PlanModelInfo>(CONFIG.slug, &model.id);
-            let plan_dialect = discovered
-                .as_deref()
-                .map(PlanModelInfo::dialect)
-                .or_else(|| is_codex_model(&model.id).then(|| plan_dialect(&model.id).clone()));
+            let plan_dialect = resolved_plan_dialect(&model.id, discovered.as_deref());
             if let Some(dialect) = plan_dialect {
                 let stream_timeout = self.compat.stream_timeout();
                 return self
@@ -916,6 +930,12 @@ mod tests {
     ) {
         let models = parse_plan_models(PLAN_MODELS_RESPONSE, Some(ACCOUNT_ID)).unwrap();
         let info = plan_info(&models[index]);
+        assert_eq!(
+            resolved_plan_dialect(&models[index].id, Some(&info))
+                .unwrap()
+                .supported,
+            info.efforts,
+        );
         let model = Model::from_spec(&format!("openai/{}", models[index].id)).unwrap();
         let mut body = json!({});
         responses::apply_responses_reasoning(&mut body, thinking, &model, &info.dialect());

@@ -30,6 +30,13 @@ pub(crate) struct LocalEndpointConfig {
     pub thinking_budget_field: bool,
 }
 
+pub(crate) fn supports_thinking_controls(slug: &str) -> bool {
+    !matches!(
+        resolve_protocol_for_local(slug),
+        Some(Protocol::OpenaiResponses)
+    )
+}
+
 fn resolve_protocol_for_local(slug: &str) -> Option<Protocol> {
     maki_config::providers::resolve_protocol(
         slug,

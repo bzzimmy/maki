@@ -91,6 +91,16 @@ impl OpenRouter {
 /// 1. mandatory - always on; Off sends nothing (can't disable).
 /// 2. default_enabled - on by default; Off sends effort "none".
 /// 3. default off - Off sends nothing; any effort string turns it on.
+pub(crate) fn requires_thinking(model: &Model) -> bool {
+    crate::model_registry::provider_info::<OpenRouterModelInfo>("openrouter", &model.id)
+        .is_some_and(|info| info.reasoning_mandatory)
+}
+
+pub(crate) fn thinking_efforts(model: &Model) -> Vec<Effort> {
+    let info = crate::model_registry::provider_info::<OpenRouterModelInfo>("openrouter", &model.id);
+    effort_dialect(info.as_deref()).supported.to_vec()
+}
+
 fn effort_dialect(info: Option<&OpenRouterModelInfo>) -> EffortDialect<'_> {
     let Some(info) = info else {
         return dialect::PREFER_HIGH;
@@ -362,6 +372,43 @@ mod tests {
         let info = reasoning_info(efforts);
         let (dialect, model) = openrouter_model(Some(&info));
         assert_eq!(config.effort_str(&dialect, &model), Some(expected));
+    }
+
+    #[test]
+    fn thinking_levels_use_discovered_efforts() {
+        let models = [false, true].map(|mandatory| {
+            let mut model = Model::from_spec(&format!(
+                "openrouter/test-thinking-levels-discovered-{mandatory}"
+            ))
+            .unwrap();
+            model.thinking_override = Some(crate::model::ThinkingSupport::Yes);
+            (model, mandatory)
+        });
+        crate::model_registry::set_known_models(
+            "openrouter",
+            models
+                .iter()
+                .map(|(model, mandatory)| {
+                    let mut info = reasoning_info(&[Effort::Max, Effort::Low, Effort::Low]);
+                    info.reasoning_mandatory = *mandatory;
+                    ModelInfo {
+                        provider_info: Some(Arc::new(info)),
+                        ..ModelInfo::id_only(model.id.clone())
+                    }
+                })
+                .collect(),
+        );
+        for (model, mandatory) in models {
+            let mut expected = vec![
+                ThinkingConfig::Adaptive,
+                ThinkingConfig::Effort(Effort::Low),
+                ThinkingConfig::Effort(Effort::Max),
+            ];
+            if !mandatory {
+                expected.insert(0, ThinkingConfig::Off);
+            }
+            assert_eq!(model.thinking_levels(), expected);
+        }
     }
 
     #[test]

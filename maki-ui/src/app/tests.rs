@@ -25,12 +25,13 @@ use maki_lua::{
 };
 use maki_providers::{ContentBlock, Effort, Message, Role, THINKING_USAGE, TokenUsage};
 use maki_storage::sessions::{SessionMeta, StoredMode, StoredThinking};
+use maki_storage::thinking::read_thinking;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 use test_case::test_case;
 
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -4537,18 +4538,110 @@ fn model_state_thinking_round_trips_into_set_thinking(thinking: ThinkingConfig, 
     assert_eq!(app.set_thinking(&reported).unwrap(), thinking);
 }
 
+#[test_case(KeyCode::BackTab, KeyModifiers::NONE ; "legacy")]
+#[test_case(KeyCode::BackTab, KeyModifiers::SHIFT ; "backtab_shift")]
+#[test_case(KeyCode::Tab, KeyModifiers::SHIFT ; "tab_shift")]
+fn shift_tab_cycles_thinking_without_toggling_mode(code: KeyCode, modifiers: KeyModifiers) {
+    let (_tmp, _dir, _writer, mut app) = tempdir_app();
+    let mode = app.state.mode;
+    assert!(
+        app.update(Msg::Key(KeyEvent::new(code, modifiers)))
+            .is_empty()
+    );
+    assert_eq!(app.state.thinking, ThinkingConfig::Adaptive);
+    assert_eq!(app.state.mode, mode);
+}
+
+#[test_case(KeyCode::BackTab, KeyModifiers::NONE ; "legacy")]
+#[test_case(KeyCode::BackTab, KeyModifiers::SHIFT ; "backtab_shift")]
+#[test_case(KeyCode::Tab, KeyModifiers::SHIFT ; "tab_shift")]
+fn shift_tab_lua_override_wins(code: KeyCode, modifiers: KeyModifiers) {
+    let mut app = test_app();
+    let probe = install_override(&mut app, KeyCode::Tab, KeyModifiers::SHIFT);
+    app.update(Msg::Key(KeyEvent::new(code, modifiers)));
+    assert!(probe.try_recv().is_some(), "{OVERRIDE_DISPATCHED}");
+    assert_eq!(app.state.thinking, ThinkingConfig::Off);
+}
+
+#[test_case(KeyCode::BackTab, KeyModifiers::NONE ; "legacy")]
+#[test_case(KeyCode::BackTab, KeyModifiers::SHIFT ; "backtab_shift")]
+#[test_case(KeyCode::Tab, KeyModifiers::SHIFT ; "tab_shift")]
+fn shift_tab_overlay_wins(code: KeyCode, modifiers: KeyModifiers) {
+    let mut app = test_app();
+    let probe = install_override(&mut app, KeyCode::Tab, KeyModifiers::SHIFT);
+    app.help_modal.toggle();
+    app.update(Msg::Key(KeyEvent::new(code, modifiers)));
+    assert!(probe.try_recv().is_none(), "{OVERRIDE_NOT_DISPATCHED}");
+    assert_eq!(app.state.thinking, ThinkingConfig::Off);
+}
+
+#[test_case(false ; "optional")]
+#[test_case(true ; "required")]
+fn cycle_thinking_visits_supported_levels_and_wraps(required: bool) {
+    let (_tmp, dir, _writer, mut app) = tempdir_app();
+    set_opus_model(&mut app);
+    if required {
+        app.state.model.thinking_override = Some(maki_providers::ThinkingSupport::Required);
+    }
+    let levels = app.state.model.thinking_levels();
+    app.state.thinking = *levels.last().unwrap();
+    for expected in levels {
+        app.run_builtin(BuiltinAction::CycleThinking);
+        assert_eq!(app.state.thinking, expected);
+        assert_eq!(read_thinking(&dir), Some(expected.into()));
+        if required {
+            assert_ne!(app.state.thinking, ThinkingConfig::Off);
+        }
+    }
+}
+
+#[test_case(ThinkingConfig::Budget(8192) ; "budget")]
+#[test_case(ThinkingConfig::Effort(Effort::Max) ; "unlisted_effort")]
+fn cycle_thinking_restarts_at_first_level(thinking: ThinkingConfig) {
+    let (_tmp, _dir, _writer, mut app) = tempdir_app();
+    set_opus_model(&mut app);
+    app.state.thinking = thinking;
+    app.run_builtin(BuiltinAction::CycleThinking);
+    assert_eq!(app.state.thinking, ThinkingConfig::Off);
+}
+
+#[test]
+fn cycle_thinking_unsupported_keeps_state_and_persistence() {
+    let (_tmp, dir, _writer, mut app) = tempdir_app();
+    app.set_thinking("high").unwrap();
+    app.state.model = Model::from_spec(PLAIN_MODEL_SPEC).unwrap();
+    app.run_builtin(BuiltinAction::CycleThinking);
+    assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::High));
+    assert_eq!(read_thinking(&dir), Some(app.state.thinking.into()));
+    assert_eq!(app.status_bar.flash_text(), Some(THINKING_UNSUPPORTED_MSG));
+}
+
 #[test]
 fn set_thinking_toggles_on_blank_input() {
-    let mut app = test_app();
+    let (_tmp, dir, _writer, mut app) = tempdir_app();
     assert_eq!(app.set_thinking("").unwrap(), ThinkingConfig::Adaptive);
+    assert_eq!(read_thinking(&dir), Some(StoredThinking::Adaptive));
     assert_eq!(app.set_thinking("").unwrap(), ThinkingConfig::Off);
+    assert_eq!(read_thinking(&dir), Some(StoredThinking::Off));
+}
+
+#[test]
+fn set_thinking_persistence_failure_keeps_successful_change() {
+    let (_tmp, _dir, _writer, mut app) = tempdir_app();
+    let file = NamedTempFile::new().unwrap();
+    app.storage = StateDir::from_path(file.path().to_path_buf());
+    assert_eq!(
+        app.set_thinking("high").unwrap(),
+        ThinkingConfig::Effort(Effort::High)
+    );
+    assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::High));
 }
 
 #[test_case(true, "garbage", THINKING_USAGE ; "unknown_word")]
 #[test_case(true, "0", THINKING_USAGE ; "zero_budget")]
 #[test_case(false, "low", THINKING_UNSUPPORTED_MSG ; "model_without_thinking")]
 fn set_thinking_keeps_state_on_rejected_input(supported: bool, input: &str, expected: &str) {
-    let mut app = test_app();
+    let (_tmp, dir, _writer, mut app) = tempdir_app();
     app.set_thinking("high").unwrap();
     if !supported {
         app.state.model.thinking_override = Some(maki_providers::ThinkingSupport::No);
@@ -4556,6 +4649,7 @@ fn set_thinking_keeps_state_on_rejected_input(supported: bool, input: &str, expe
 
     assert_eq!(app.set_thinking(input).unwrap_err(), expected);
     assert_eq!(app.state.thinking, ThinkingConfig::Effort(Effort::High));
+    assert_eq!(read_thinking(&dir), Some(app.state.thinking.into()));
 }
 
 /// Fast must never get stuck on: after switching to a model without fast mode,

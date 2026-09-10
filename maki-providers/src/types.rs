@@ -467,6 +467,10 @@ pub struct ThinkingFields {
 }
 
 impl ThinkingFields {
+    pub(crate) fn efforts(&self) -> Vec<Effort> {
+        self.levels.keys().copied().collect()
+    }
+
     /// Levels snap to the declared ones, so a level the model never advertised
     /// is never sent. A token budget picks the level it corresponds to; models
     /// that declare no levels fall back to `adaptive` and keep the count
@@ -689,7 +693,7 @@ impl ThinkingConfig {
     /// Models from [`ADAPTIVE_SINCE`] on reject `type: "enabled"` with a 400. A
     /// version check, not an allowlist, so future releases and new families
     /// work automatically.
-    fn requires_adaptive(model_id: &str) -> bool {
+    pub(crate) fn requires_adaptive(model_id: &str) -> bool {
         claude_version(model_id).is_some_and(|(family, version)| {
             version
                 >= if family == OPUS {

@@ -15,6 +15,8 @@ use maki_lua::{Interaction, PluginHost};
 use maki_providers::model::Model;
 use maki_storage::StateDir;
 use maki_storage::id::MakiId;
+use maki_storage::sessions::StoredThinking;
+use maki_storage::thinking::read_thinking;
 use maki_ui::{AppSession, RunOutcome};
 
 use crate::cli::{Cli, normalize_tool_name};
@@ -196,6 +198,7 @@ fn resolve_session(
     model: &str,
     cwd: &str,
     storage: &StateDir,
+    thinking: Option<StoredThinking>,
 ) -> Result<AppSession> {
     if let Some(raw) = session_id {
         let id: MakiId = raw
@@ -219,9 +222,19 @@ fn resolve_session(
             }
         }
     }
-    let session = AppSession::new(model, cwd);
+    Ok(fresh_session(model, cwd, storage, thinking))
+}
+
+fn fresh_session(
+    model: &str,
+    cwd: &str,
+    storage: &StateDir,
+    thinking: Option<StoredThinking>,
+) -> AppSession {
+    let mut session = AppSession::new(model, cwd);
+    session.meta.thinking = thinking.or_else(|| read_thinking(storage));
     setup::report_session_start(maki_otel::emit::START_FRESH, Some(session.id));
-    Ok(session)
+    session
 }
 
 fn read_initial_prompt(cli_prompt: Option<String>) -> Result<Option<String>> {
@@ -314,6 +327,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
         &stack.model.spec(),
         &cwd_str,
         &storage,
+        stack.config.session_defaults.thinking,
     )?];
     let mut focused = 0;
     let mut warnings = startup_warnings;
@@ -419,9 +433,12 @@ pub fn run(mut cli: Cli) -> Result<()> {
                     build_stack(&cli, &cwd, &storage, interaction, Some(last_good))?;
                 tabs = reloaded;
                 if tabs.is_empty() {
-                    let session = AppSession::new(&new_stack.model.spec(), &cwd_str);
-                    setup::report_session_start(maki_otel::emit::START_FRESH, Some(session.id));
-                    tabs.push(session);
+                    tabs.push(fresh_session(
+                        &new_stack.model.spec(),
+                        &cwd_str,
+                        &storage,
+                        new_stack.config.session_defaults.thinking,
+                    ));
                 }
                 stack = new_stack;
                 if let Some(report) = pack_report {
@@ -460,9 +477,74 @@ mod tests {
     use super::*;
     use color_eyre::eyre::eyre;
     use maki_config::RawConfig;
+    use maki_storage::thinking::persist_thinking;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tempfile::TempDir;
+    use test_case::test_case;
+
+    const TEST_MODEL: &str = "anthropic/claude-sonnet-4";
+    const TEST_CWD: &str = "/thinking-test";
+
+    #[test_case(None, None, None; "default_off")]
+    #[test_case(None, Some(StoredThinking::Adaptive), Some(StoredThinking::Adaptive); "remembered")]
+    #[test_case(None, Some(StoredThinking::Off), Some(StoredThinking::Off); "remembered_off")]
+    #[test_case(Some(StoredThinking::Off), Some(StoredThinking::Adaptive), Some(StoredThinking::Off); "explicit_off")]
+    #[test_case(Some(StoredThinking::Adaptive), Some(StoredThinking::Off), Some(StoredThinking::Adaptive); "explicit_on")]
+    fn fresh_session_thinking_precedence(
+        configured: Option<StoredThinking>,
+        remembered: Option<StoredThinking>,
+        expected: Option<StoredThinking>,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        if let Some(thinking) = remembered {
+            persist_thinking(&storage, &thinking).unwrap();
+        }
+        for continue_session in [false, true] {
+            let session = resolve_session(
+                continue_session,
+                None,
+                TEST_MODEL,
+                TEST_CWD,
+                &storage,
+                configured,
+            )
+            .unwrap();
+            assert_eq!(session.meta.thinking, expected);
+        }
+    }
+
+    #[test_case(false, None; "resume_unset")]
+    #[test_case(true, None; "continue_unset")]
+    #[test_case(false, Some(StoredThinking::Off); "resume_off")]
+    #[test_case(true, Some(StoredThinking::Off); "continue_off")]
+    fn empty_resumed_session_does_not_inherit_remembered_thinking(
+        continue_session: bool,
+        thinking: Option<StoredThinking>,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
+        persist_thinking(&storage, &StoredThinking::Adaptive).unwrap();
+        let mut saved = AppSession::new(TEST_MODEL, TEST_CWD);
+        saved.meta.thinking = thinking;
+        saved.save(&storage).unwrap();
+        let id = saved.id.to_string();
+        let mut resumed = resolve_session(
+            continue_session,
+            (!continue_session).then_some(id.as_str()),
+            TEST_MODEL,
+            TEST_CWD,
+            &storage,
+            None,
+        )
+        .unwrap();
+        assert_eq!(resumed.id, saved.id);
+        assert!(resumed.messages().is_empty());
+        test_config().session_defaults.seed(&mut resumed.meta);
+        assert_eq!(resumed.meta.thinking, thinking);
+    }
 
     fn no_names(_: &PluginHost) -> Result<Vec<String>> {
         Ok(Vec::new())

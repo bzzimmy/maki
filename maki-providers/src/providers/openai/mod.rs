@@ -3,6 +3,7 @@ mod platform;
 pub(crate) mod responses;
 
 pub use platform::OpenAi;
+pub(crate) use platform::thinking_efforts;
 
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 

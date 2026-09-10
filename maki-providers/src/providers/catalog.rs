@@ -30,7 +30,7 @@ use crate::provider::{BoxFuture, Provider};
 use crate::providers::anthropic::shared;
 use crate::providers::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 use crate::providers::{ResolvedAuth, Timeouts, http_client, opencode, user_agent};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
+use crate::{AgentError, Effort, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
 const MESSAGES_PATH: &str = "/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -937,6 +937,14 @@ pub fn try_create(slug: &str, timeouts: Timeouts) -> Option<Result<Box<dyn Provi
 /// catalog has already been downloaded. Never triggers a fetch — callers
 /// (e.g. `Model::from_spec`) must tolerate `None` and fall through, since
 /// the catalog may still be warming in the background.
+pub(crate) fn thinking_efforts(model: &Model, slug: &str) -> Vec<Effort> {
+    with_provider_if_available(slug, |data| match data.api_format {
+        EndpointType::Messages => model.anthropic_thinking_efforts(),
+        EndpointType::ChatCompletions => dialect::PREFER_HIGH.supported.to_vec(),
+    })
+    .unwrap_or_else(|| dialect::PREFER_HIGH.supported.to_vec())
+}
+
 pub fn model_meta_if_available(slug: &str, model_id: &str) -> Option<CatalogMetaView> {
     with_provider_if_available(slug, |data| {
         data.models.get(model_id).map(|meta| CatalogMetaView {

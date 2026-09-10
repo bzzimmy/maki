@@ -44,6 +44,25 @@ fn is_builtin_slug(slug: &str) -> bool {
     ManifestRegistry::get(slug).is_some()
 }
 
+pub(crate) fn thinking_levels(model: &Model) -> Vec<ThinkingConfig> {
+    let config = ProvidersConfig::load();
+    openai_thinking_levels(
+        model,
+        resolve_protocol(&model.provider, config.get(&model.provider)).unwrap_or(Protocol::Openai),
+    )
+}
+
+fn openai_thinking_levels(model: &Model, protocol: Protocol) -> Vec<ThinkingConfig> {
+    if protocol == Protocol::OpenaiResponses || !model.supports_thinking() {
+        return Vec::new();
+    }
+    if model.requires_thinking() {
+        vec![ThinkingConfig::Adaptive]
+    } else {
+        vec![ThinkingConfig::Off, ThinkingConfig::Adaptive]
+    }
+}
+
 pub fn base_kind(slug: &str) -> Option<ProviderKind> {
     let config = ProvidersConfig::load();
     Some(protocol_kind(config.get(slug)?.protocol?))
@@ -317,6 +336,27 @@ impl Provider for CustomOpenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use test_case::test_case;
+
+    #[test_case(Protocol::Openai, ThinkingSupport::Yes, &[ThinkingConfig::Off, ThinkingConfig::Adaptive] ; "chat_toggle")]
+    #[test_case(Protocol::Openai, ThinkingSupport::Required, &[ThinkingConfig::Adaptive] ; "chat_required")]
+    #[test_case(Protocol::Openai, ThinkingSupport::No, &[] ; "chat_no_thinking")]
+    #[test_case(Protocol::OpenaiResponses, ThinkingSupport::Yes, &[] ; "responses_unwired")]
+    fn thinking_levels_follow_custom_protocol(
+        protocol: Protocol,
+        support: ThinkingSupport,
+        expected: &[ThinkingConfig],
+    ) {
+        let mut model = model_from_def(
+            &openai_def("gpt-5"),
+            ProviderKind::OpenAi,
+            "test-custom-thinking",
+            "gpt-5",
+        );
+        model.thinking_override = Some(support);
+        assert_eq!(openai_thinking_levels(&model, protocol), expected);
+    }
 
     fn openai_def(model_id: &str) -> ProviderDef {
         serde_json::from_str(&format!(

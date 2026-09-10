@@ -11,13 +11,15 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use maki_config::ModelPolicy;
-use maki_storage::sessions::{MIN_THINKING_BUDGET, StoredTokenUsage};
+use maki_storage::sessions::{Effort, MIN_THINKING_BUDGET, StoredTokenUsage};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{ManifestRegistry, ProviderManifest};
 use crate::model_registry;
-use crate::providers::{anthropic, custom, dynamic};
-use crate::types::ThinkingFields;
+use crate::providers::{
+    anthropic, aperture, catalog, copilot, custom, dynamic, local, openai, openrouter,
+};
+use crate::types::{ThinkingConfig, ThinkingFields, dialect};
 
 const PER_MILLION: f64 = 1_000_000.0;
 
@@ -364,8 +366,77 @@ impl Model {
             .unwrap_or(manifest.supports_thinking)
     }
 
+    pub fn thinking_levels(&self) -> Vec<ThinkingConfig> {
+        if !self.supports_thinking() {
+            return Vec::new();
+        }
+        let slug = ManifestRegistry::for_slug(&self.provider)
+            .map_or(self.provider.as_ref(), |manifest| manifest.slug);
+        let mut efforts = match slug {
+            "openai" => {
+                if ManifestRegistry::get(&self.provider).is_none()
+                    && dynamic::base_for_slug(&self.provider).is_none()
+                {
+                    return custom::thinking_levels(self);
+                }
+                openai::thinking_efforts(self)
+            }
+            "aperture" => return aperture::thinking_levels(self),
+            "openrouter" => openrouter::thinking_efforts(self),
+            "copilot" => match copilot::thinking_efforts(self) {
+                Some(efforts) => efforts,
+                None => return Vec::new(),
+            },
+            "anthropic" => self.anthropic_thinking_efforts(),
+            "google" => Effort::ALL.to_vec(),
+            "llama-cpp" => {
+                if !local::supports_thinking_controls(slug) {
+                    return Vec::new();
+                }
+                self.thinking_fields
+                    .as_ref()
+                    .map_or_else(|| Effort::ALL.to_vec(), |fields| fields.efforts())
+            }
+            "ollama" => return Vec::new(),
+            "zai" => dialect::GLM.supported.to_vec(),
+            "deepseek" => dialect::DEEPSEEK.supported.to_vec(),
+            "mistral" => dialect::HIGH_ONLY.supported.to_vec(),
+            "xai" => dialect::GROK.supported.to_vec(),
+            "tensorx" => dialect::TENSORX.supported.to_vec(),
+            "synthetic" | "regolo" => dialect::STANDARD.supported.to_vec(),
+            "opencode" | "opencode-go" => {
+                let provider = self
+                    .id
+                    .split_once('/')
+                    .map_or("opencode", |(provider, _)| provider);
+                catalog::thinking_efforts(self, provider)
+            }
+            _ => catalog::thinking_efforts(self, slug),
+        };
+        efforts.sort_unstable();
+        efforts.dedup();
+        let mut levels = Vec::with_capacity(efforts.len() + 2);
+        if !self.requires_thinking() {
+            levels.push(ThinkingConfig::Off);
+        }
+        levels.push(ThinkingConfig::Adaptive);
+        levels.extend(efforts.into_iter().map(ThinkingConfig::Effort));
+        levels
+    }
+
+    pub(crate) fn anthropic_thinking_efforts(&self) -> Vec<Effort> {
+        if ThinkingConfig::requires_adaptive(&self.id) {
+            dialect::ANTHROPIC_ADAPTIVE.supported.to_vec()
+        } else {
+            Effort::ALL.to_vec()
+        }
+    }
+
     pub fn requires_thinking(&self) -> bool {
         self.thinking_override == Some(ThinkingSupport::Required)
+            || (ManifestRegistry::for_slug(&self.provider)
+                .is_some_and(|manifest| manifest.slug == "openrouter")
+                && openrouter::requires_thinking(self))
     }
 
     /// Vision support, most specific first:
@@ -701,6 +772,59 @@ impl AddAssign for TokenUsage {
 mod tests {
     use super::*;
     use test_case::test_case;
+
+    #[test_case("openai/gpt-5.3-codex", dialect::CODEX.supported ; "codex")]
+    #[test_case("openai/gpt-5.1-codex", dialect::CODEX_5_1.supported ; "older_codex")]
+    #[test_case("openai/gpt-5.6-sol", dialect::GPT_5_6.supported ; "plan_max")]
+    #[test_case("openai/gpt-6-astra", dialect::GPT_6.supported ; "plan_without_minimal")]
+    #[test_case("anthropic/claude-opus-4-7", dialect::ANTHROPIC_ADAPTIVE.supported ; "anthropic_adaptive")]
+    #[test_case("anthropic/claude-sonnet-4-5", &Effort::ALL ; "anthropic_budget")]
+    #[test_case("google/gemini-2.5-pro", &Effort::ALL ; "google_budget")]
+    #[test_case("zai/glm-5", dialect::GLM.supported ; "glm")]
+    #[test_case("deepseek/deepseek-v4-pro", dialect::DEEPSEEK.supported ; "deepseek")]
+    #[test_case("openrouter/test-thinking-levels", dialect::PREFER_HIGH.supported ; "router_fallback")]
+    fn thinking_levels_follow_wire_dialect(spec: &str, efforts: &[Effort]) {
+        let mut model = Model::from_spec(spec).unwrap();
+        model.thinking_override = Some(ThinkingSupport::Yes);
+        let expected: Vec<_> = [ThinkingConfig::Off, ThinkingConfig::Adaptive]
+            .into_iter()
+            .chain(efforts.iter().copied().map(ThinkingConfig::Effort))
+            .collect();
+        assert_eq!(model.thinking_levels(), expected);
+        model.thinking_override = Some(ThinkingSupport::Required);
+        assert_eq!(model.thinking_levels(), expected[1..]);
+        model.thinking_override = Some(ThinkingSupport::No);
+        assert!(model.thinking_levels().is_empty());
+    }
+
+    #[test_case("copilot/gpt-4o" ; "copilot_chat_has_no_control")]
+    #[test_case("ollama/qwen3" ; "ollama_has_no_control")]
+    fn thinking_levels_exclude_unwired_controls(spec: &str) {
+        let mut model = Model::from_spec(spec).unwrap();
+        model.thinking_override = Some(ThinkingSupport::Yes);
+        assert!(model.thinking_levels().is_empty());
+    }
+
+    #[test_case(r#"{"low": {}, "max": {}}"#, &[Effort::Low, Effort::Max] ; "declared_local_levels")]
+    #[test_case(r#"{"adaptive": {}}"#, &[] ; "local_toggle_only")]
+    fn thinking_levels_use_local_fields(fields: &str, efforts: &[Effort]) {
+        let mut model = Model::from_spec("llama-cpp/test-thinking-levels").unwrap();
+        model.thinking_override = Some(ThinkingSupport::Yes);
+        model.thinking_fields = Some(Box::new(serde_json::from_str(fields).unwrap()));
+        let levels = model.thinking_levels();
+        assert_eq!(
+            &levels[..2],
+            &[ThinkingConfig::Off, ThinkingConfig::Adaptive]
+        );
+        assert_eq!(
+            levels[2..],
+            efforts
+                .iter()
+                .copied()
+                .map(ThinkingConfig::Effort)
+                .collect::<Vec<_>>()
+        );
+    }
 
     fn policy(allowed: &[&str], excluded: &[&str]) -> ModelPolicy {
         ModelPolicy::new(

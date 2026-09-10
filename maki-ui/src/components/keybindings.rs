@@ -109,6 +109,7 @@ pub struct Bind {
 
 impl Bind {
     pub fn matches(&self, key: KeyEvent) -> bool {
+        let key = normalize_key(key);
         key.code == self.code && key.modifiers == self.modifiers
     }
 
@@ -121,6 +122,14 @@ impl Bind {
             state: crossterm::event::KeyEventState::NONE,
         }
     }
+}
+
+pub(crate) fn normalize_key(mut key: KeyEvent) -> KeyEvent {
+    if key.code == KeyCode::BackTab {
+        key.code = KeyCode::Tab;
+        key.modifiers |= KeyModifiers::SHIFT;
+    }
+    key
 }
 
 pub mod key {
@@ -153,6 +162,11 @@ pub mod key {
     pub const OPEN_EDITOR: Bind = ctrl_bind!('o');
     pub const PLAN_TOGGLE: Bind = ctrl_bind!('t');
     pub const MODEL_PICKER: Bind = ctrl_bind!('m');
+    pub const CYCLE_THINKING: Bind = Bind {
+        code: KeyCode::Tab,
+        modifiers: KeyModifiers::SHIFT,
+        label: "Shift+Tab",
+    };
     pub const REFRESH: Bind = ctrl_bind!('r');
     pub const SUSPEND: Bind = ctrl_bind!('z');
     pub const DELETE: Bind = ctrl_bind!('d');
@@ -348,6 +362,12 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single(key::MODEL_PICKER.label),
         description: "Model picker",
+        context: KeybindContext::General,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::CYCLE_THINKING.label),
+        description: "Cycle thinking level",
         context: KeybindContext::General,
         platform: Platform::All,
     },

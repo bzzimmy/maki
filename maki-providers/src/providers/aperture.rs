@@ -10,6 +10,7 @@ use tracing::warn;
 use crate::manifest::{ManifestRegistry, ProviderManifest};
 use crate::model::{Model, ModelEntry, ModelInfo, ModelPricing, ThinkingSupport, lookup_entry};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
+use crate::types::ThinkingConfig;
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
 use maki_storage::id::SessionRef;
 
@@ -148,6 +149,21 @@ fn routed_kind(provider_id: &str, merged: &OverrideFields) -> Option<ProviderKin
         .into_iter()
         .flatten()
         .find_map(parse_compat_base)
+}
+
+pub(crate) fn thinking_levels(model: &Model) -> Vec<ThinkingConfig> {
+    thinking_levels_with_overrides(model, &load_overrides())
+}
+
+fn thinking_levels_with_overrides(model: &Model, overrides: &Overrides) -> Vec<ThinkingConfig> {
+    let (provider_id, model_id) = model.id.split_once('/').unwrap_or(("", &model.id));
+    let ov = merged_override(overrides, provider_id, model_id);
+    let Some(kind) = routed_kind(provider_id, &ov) else {
+        return Vec::new();
+    };
+    let mut routed = native_route_model(model, kind, model_id);
+    routed.provider = kind.to_string().into();
+    routed.thinking_levels()
 }
 
 fn manifest_for_kind(kind: ProviderKind) -> Option<&'static ProviderManifest> {
@@ -518,6 +534,35 @@ mod tests {
             routed_kind(provider_id, &OverrideFields::default()),
             expected
         );
+    }
+
+    #[test_case("zai/glm-5", None, Some(ProviderKind::Zai) ; "native")]
+    #[test_case("opaque/model", Some("deepseek"), Some(ProviderKind::DeepSeek) ; "base_override")]
+    #[test_case("google/gemini-pro", None, Some(ProviderKind::Google) ; "google")]
+    #[test_case("openai/gpt-5", None, None ; "unrouted_openai")]
+    #[test_case("opaque/model", None, None ; "unrouted_vendor")]
+    #[test_case("model", None, None ; "unprefixed")]
+    #[test_case("ollama/qwen3", None, Some(ProviderKind::Ollama) ; "unwired_native")]
+    fn thinking_levels_follow_route(id: &str, base: Option<&str>, kind: Option<ProviderKind>) {
+        let mut model = Model::from_spec(&format!("aperture/{id}")).unwrap();
+        model.thinking_override = Some(ThinkingSupport::Yes);
+        let mut overrides = Overrides::new();
+        if let Some(base) = base {
+            overrides.insert(
+                "opaque".into(),
+                ProviderOverride {
+                    default: base_override(base),
+                    ..Default::default()
+                },
+            );
+        }
+        let expected = kind.map_or_else(Vec::new, |kind| {
+            let bare_id = id.split_once('/').map_or(id, |(_, id)| id);
+            let mut native = native_route_model(&model, kind, bare_id);
+            native.provider = kind.to_string().into();
+            native.thinking_levels()
+        });
+        assert_eq!(thinking_levels_with_overrides(&model, &overrides), expected);
     }
 
     fn base_override(base: &str) -> OverrideFields {

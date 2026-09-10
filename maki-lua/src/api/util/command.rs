@@ -482,6 +482,7 @@ pub enum BuiltinAction {
     PrevChat,
     NextChat,
     ModelPicker,
+    CycleThinking,
 }
 
 pub enum UiAction {

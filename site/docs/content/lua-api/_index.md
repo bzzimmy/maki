@@ -5136,7 +5136,7 @@ and call this from it.
 
 Valid names: `"file_picker"`, `"search"`, `"help"`,
 `"plan_toggle"`, `"plan_editor"`, `"edit_input"`, `"pop_queue"`,
-`"prev_chat"`, `"next_chat"`, `"model_picker"`.
+`"prev_chat"`, `"next_chat"`, `"model_picker"`, `"cycle_thinking"`.
 
 For slash commands rather than keybound actions, see
 `maki.api.run_command`.
