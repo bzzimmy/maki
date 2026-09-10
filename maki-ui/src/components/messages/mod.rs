@@ -225,24 +225,6 @@ impl MessagesPanel {
         self.streaming_thinking.push(text);
     }
 
-    pub fn toggle_thinking(&mut self) {
-        self.show_thinking = !self.show_thinking;
-        self.thinking_collapsed = !self.show_thinking;
-        for msg in &mut self.messages {
-            if matches!(msg.role, DisplayRole::Thinking) {
-                msg.thinking_collapsed = self.thinking_collapsed;
-            }
-        }
-        for seg in self.cache.segments_mut() {
-            if seg
-                .msg_index
-                .is_some_and(|i| matches!(self.messages[i].role, DisplayRole::Thinking))
-            {
-                seg.stale = true;
-            }
-        }
-    }
-
     pub fn text_delta(&mut self, text: &str) {
         self.flush_thinking();
         self.streaming_text.push(text);
@@ -1296,7 +1278,7 @@ impl MessagesPanel {
         };
         let mut lines = vec![Line::styled(
             format!(
-                "{} thinking… (alt+t to {})",
+                "{} thinking… (click to {})",
                 spinner_str(self.started_at.elapsed().as_millis()),
                 if collapsed { "expand" } else { "collapse" }
             ),

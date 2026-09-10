@@ -161,11 +161,6 @@ pub mod key {
     pub const FILE_PICKER: Bind = ctrl_bind!('s');
     pub const OPEN_EDITOR: Bind = ctrl_bind!('o');
     pub const PLAN_TOGGLE: Bind = ctrl_bind!('t');
-    pub const TOGGLE_THINKING: Bind = Bind {
-        code: KeyCode::Char('t'),
-        modifiers: KeyModifiers::ALT,
-        label: "Alt+T",
-    };
     pub const MODEL_PICKER: Bind = ctrl_bind!('m');
     pub const CYCLE_THINKING: Bind = Bind {
         code: KeyCode::Tab,
@@ -328,12 +323,6 @@ pub struct Keybind {
 }
 
 pub const KEYBINDS: &[Keybind] = &[
-    Keybind {
-        label: KeyLabel::Single(key::TOGGLE_THINKING.label),
-        description: "Expand / collapse reasoning",
-        context: KeybindContext::General,
-        platform: Platform::All,
-    },
     Keybind {
         label: KeyLabel::Single(key::QUIT.label),
         description: "Quit / clear input",

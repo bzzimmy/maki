@@ -95,7 +95,7 @@ pub(crate) fn finalized_thinking_lines(
     if collapsed && remaining > 0 {
         lines.truncate(THINKING_PREVIEW_LINES);
         lines.push(Line::styled(
-            format!("{TOOL_BODY_INDENT}… ({remaining} more lines, alt+t to expand)"),
+            format!("{TOOL_BODY_INDENT}… ({remaining} more lines, click to expand)"),
             theme::current().thinking,
         ));
     }

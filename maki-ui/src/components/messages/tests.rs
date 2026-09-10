@@ -1983,8 +1983,8 @@ fn collapsed_streaming_thinking_shows_latest_two_lines() {
         "should show the latest two lines; got: {text}"
     );
     assert!(
-        text.contains("alt+t to expand"),
-        "should show the expansion shortcut; got: {text}"
+        text.contains("click to expand"),
+        "should show the expansion hint; got: {text}"
     );
     assert!(
         !text.contains("line one"),
@@ -2047,7 +2047,7 @@ fn short_completed_thinking_fits_in_preview() {
         "short thinking needs no truncation footer; got: {text}"
     );
     assert!(
-        !text.contains("alt+t to expand"),
+        !text.contains("click to expand"),
         "short thinking needs no expansion hint; got: {text}"
     );
     assert!(
@@ -2095,8 +2095,8 @@ fn completed_thinking_previews_first_two_lines() {
         "footer line count; got: {text}"
     );
     assert!(
-        text.contains("alt+t to expand"),
-        "footer should show the expansion shortcut; got: {text}"
+        text.contains("click to expand"),
+        "footer should show the expansion hint; got: {text}"
     );
     assert!(
         !text.contains("cached line 7"),
@@ -2163,7 +2163,7 @@ fn stream_reset_clears_thinking_expand_state() {
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("alt+t to expand"),
+        text.contains("click to expand"),
         "new stream after reset should collapse again; got: {text}"
     );
     assert!(
@@ -2190,7 +2190,7 @@ fn height_measures_the_width_asked_for_even_while_stale() {
 
 #[test_case(false; "streaming")]
 #[test_case(true; "resumed_history")]
-fn reasoning_toggle_survives_flush_and_resize(history: bool) {
+fn reasoning_click_toggle_survives_flush_and_resize(history: bool) {
     const REASONING: &str = "first thought\nsecond thought\nlast thought";
     const FIRST: &str = "first thought";
     const LAST: &str = "last thought";
@@ -2207,14 +2207,14 @@ fn reasoning_toggle_survives_flush_and_resize(history: bool) {
     assert_eq!(text.contains(FIRST), history);
     assert_eq!(text.contains(LAST), !history);
 
-    panel.toggle_thinking();
+    assert!(panel.handle_click(0, Rect::new(0, 0, 80, 20)));
     let text = buffer_text(&render(&mut panel, 80, 20));
     assert!(text.contains(FIRST) && text.contains(LAST));
     panel.flush();
     let text = buffer_text(&render(&mut panel, 40, 20));
     assert!(text.contains(FIRST) && text.contains(LAST));
 
-    panel.toggle_thinking();
+    assert!(panel.handle_click(0, Rect::new(0, 0, 40, 20)));
     let text = buffer_text(&render(&mut panel, 80, 20));
     assert!(text.contains(FIRST));
     assert!(!text.contains(LAST));

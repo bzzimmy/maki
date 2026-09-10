@@ -3967,21 +3967,6 @@ fn ctrl_t_noop_when_plan_not_ready() {
     assert!(!app.plan_form.is_visible());
 }
 
-#[test]
-fn alt_t_toggles_reasoning_without_editing_input() {
-    const REASONING: &str = "first thought\nsecond thought\nlast thought";
-    const LAST_THOUGHT: &str = "last thought";
-    let mut app = test_app();
-    app.active_chat()
-        .push(DisplayMessage::new(DisplayRole::Thinking, REASONING.into()));
-    assert!(!rendered(&mut app).contains(LAST_THOUGHT));
-    app.update(Msg::Key(kb::TOGGLE_THINKING.to_key_event()));
-    assert!(rendered(&mut app).contains(LAST_THOUGHT));
-    app.update(Msg::Key(kb::TOGGLE_THINKING.to_key_event()));
-    assert!(!rendered(&mut app).contains(LAST_THOUGHT));
-    assert!(app.input_box.is_empty());
-}
-
 fn install_override(
     app: &mut App,
     key: KeyCode,

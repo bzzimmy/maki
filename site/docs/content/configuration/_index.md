@@ -76,7 +76,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `typewriter_ms_per_char` | u64 | `4` | - | Typewriter effect speed (ms/char) |
 | `mouse_scroll_lines` | u32 | `3` | 1 | Lines per mouse wheel scroll |
 | `max_input_lines` | u32 | `20` | 1 | Maximum visible input lines |
-| `show_thinking` | bool | `false` | - | Expand model reasoning by default. The transcript otherwise shows a two-line preview: latest lines while streaming, first lines when complete. Alt+T toggles reasoning in the active chat |
+| `show_thinking` | bool | `false` | - | Expand model reasoning by default. The transcript otherwise shows a two-line preview: latest lines while streaming, first lines when complete. Click a reasoning block to expand or collapse it |
 | `clock_format` | String | `system` | - | Clock format for timestamps: "12h", "24h", or "system" (follow the OS preference, 24h when unknown) |
 
 ### `ui.theme`

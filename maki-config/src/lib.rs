@@ -1034,7 +1034,7 @@ pub struct UiConfig {
 
     #[config(
         default = false,
-        desc = "Expand model reasoning by default. The transcript otherwise shows a two-line preview: latest lines while streaming, first lines when complete. Alt+T toggles reasoning in the active chat"
+        desc = "Expand model reasoning by default. The transcript otherwise shows a two-line preview: latest lines while streaming, first lines when complete. Click a reasoning block to expand or collapse it"
     )]
     pub show_thinking: bool,
 
