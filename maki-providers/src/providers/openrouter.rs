@@ -335,6 +335,7 @@ mod tests {
 
     fn openrouter_model(info: Option<&OpenRouterModelInfo>) -> (EffortDialect<'_>, Model) {
         let model = Model {
+            display_name: None,
             id: "test-model".into(),
             provider: "openrouter".into(),
             tier: crate::model::ModelTier::Medium,

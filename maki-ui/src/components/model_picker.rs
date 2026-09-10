@@ -67,7 +67,7 @@ pub enum ModelPickerAction {
 
 struct ModelEntry {
     spec: String,
-    id: String,
+    display_name: String,
     provider_display: String,
     suffix: Option<String>,
     tier: String,
@@ -77,7 +77,7 @@ struct ModelEntry {
 
 impl PickerItem for ModelEntry {
     fn label(&self) -> &str {
-        &self.id
+        &self.display_name
     }
 
     fn suffix(&self) -> Option<&str> {
@@ -177,7 +177,7 @@ impl ModelPicker {
             a.provider_display
                 .cmp(&b.provider_display)
                 .then_with(|| b.free.cmp(&a.free))
-                .then_with(|| a.id.cmp(&b.id))
+                .then_with(|| a.display_name.cmp(&b.display_name))
         });
         entries.extend(full);
         entries
@@ -288,9 +288,13 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
     };
 
     let override_tiers = model_registry::override_tiers(spec);
-    let (tier, free) = match maki_providers::Model::from_spec(spec) {
-        Ok(m) => (m.tier.to_string(), m.is_free()),
-        Err(_) => (String::new(), false),
+    let (display_name, tier, free) = match maki_providers::Model::from_spec(spec) {
+        Ok(m) => (
+            m.display_name().to_string(),
+            m.tier.to_string(),
+            m.is_free(),
+        ),
+        Err(_) => (model_id.to_string(), String::new(), false),
     };
     let tier = if override_tiers.is_empty() {
         tier
@@ -306,10 +310,9 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
         (true, false) => format!("{FREE_PREFIX}{tier}"),
         (false, _) => tier,
     };
-    let id = model_id.to_string();
     Some(ModelEntry {
         spec: spec.to_string(),
-        id,
+        display_name,
         provider_display,
         suffix: None,
         tier,
@@ -411,7 +414,7 @@ mod tests {
     #[test]
     fn parse_model_entry_valid() {
         let entry = parse_model_entry("anthropic/claude-sonnet-4-20250514").unwrap();
-        assert_eq!(entry.id, "claude-sonnet-4-20250514");
+        assert_eq!(entry.display_name, "claude-sonnet-4-20250514");
         assert_eq!(entry.provider_display, "Anthropic");
         assert!(!entry.tier.is_empty());
     }
@@ -692,7 +695,7 @@ mod tests {
         let mut p = ModelPicker::new(models);
         p.open("");
         let entries = p.load_entries();
-        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        let ids: Vec<&str> = entries.iter().map(|e| e.display_name.as_str()).collect();
         assert_eq!(ids, ["stealth/ox-alpha", PAID_ID]);
     }
 }

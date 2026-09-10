@@ -294,6 +294,7 @@ mod tests {
 
     fn test_model(thinking: bool) -> Model {
         Model {
+            display_name: None,
             id: "grok-4.6".into(),
             provider: "xai".into(),
             tier: ModelTier::Strong,

@@ -297,6 +297,7 @@ impl App {
             model_id: chat
                 .model_id
                 .as_deref()
+                .or(self.state.model.display_name.as_deref())
                 .unwrap_or(&self.state.session.model),
             stats: UsageStats {
                 global_cost: self.state.cost,

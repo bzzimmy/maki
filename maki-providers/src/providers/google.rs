@@ -692,6 +692,7 @@ mod tests {
 
     fn test_model() -> Model {
         Model {
+            display_name: None,
             id: "gemini-2.5-flash".into(),
             provider: Arc::<str>::from("google"),
             tier: ModelTier::Medium,

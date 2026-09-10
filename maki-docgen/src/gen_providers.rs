@@ -176,6 +176,7 @@ discover_models = true         # also list models via the provider's /models end
 
 [[my-proxy.models]]
 id = "fast-v1"
+display_name = "Fast Model"
 tier = "weak"
 context_window = 128000
 max_output_tokens = 16384
@@ -213,6 +214,7 @@ supports_vision = false
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `id` | string | required | Model id. Spec becomes `{{slug}}/{{id}}` |
+| `display_name` | string | model id | Friendly label in the model picker and main-chat status bar. Requests and model specs still use `id` |
 | `tier` | string | `medium` | `weak`, `medium`, `strong`, or `compaction` |
 | `context_window` | u32 | protocol default | Tokens of context |
 | `max_output_tokens` | u32 | protocol default | Max completion tokens |

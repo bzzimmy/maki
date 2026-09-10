@@ -92,6 +92,7 @@ impl ScriptModel {
     fn to_model(&self, slug: &str, base: ProviderKind, id: String, tier: ModelTier) -> Model {
         Model {
             id,
+            display_name: None,
             provider: Arc::from(slug),
             tier,
             family: base.family(),

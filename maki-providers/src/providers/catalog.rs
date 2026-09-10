@@ -1095,6 +1095,7 @@ mod tests {
         assert!(smol::block_on(provider.list_models()).unwrap().is_empty());
 
         let model = Model {
+            display_name: None,
             id: "free-model".into(),
             provider: Arc::from("opencode-go"),
             tier: ModelTier::Medium,

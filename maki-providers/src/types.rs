@@ -1274,6 +1274,7 @@ mod tests {
 
     fn clamp_test_model(provider: crate::provider::ProviderKind) -> crate::model::Model {
         crate::model::Model {
+            display_name: None,
             id: "test-model".into(),
             provider: std::sync::Arc::<str>::from(provider.to_string()),
             tier: crate::model::ModelTier::Medium,

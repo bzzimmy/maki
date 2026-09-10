@@ -30,6 +30,8 @@ pub enum Tier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelDef {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(default)]
     pub tier: Tier,
     #[serde(default, skip_serializing_if = "Option::is_none")]

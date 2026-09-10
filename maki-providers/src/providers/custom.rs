@@ -164,6 +164,7 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
         .unwrap_or_default();
     Model {
         id: model_id.to_string(),
+        display_name: declared.and_then(|m| m.display_name.clone()),
         provider: Arc::from(slug),
         tier,
         family: kind.family(),
@@ -338,6 +339,24 @@ mod tests {
     use super::*;
 
     use test_case::test_case;
+
+    const NAMED_MODEL_ID: &str = "vendor/model-20260901";
+    const NAMED_MODEL_SLUG: &str = "custom-display-name-test";
+    const MODEL_DISPLAY_NAME: &str = "Coding Model";
+
+    #[test_case(Some(MODEL_DISPLAY_NAME); "named")]
+    #[test_case(None; "id_fallback")]
+    fn model_display_name_preserves_identity(display_name: Option<&str>) {
+        let def: ProviderDef = serde_json::from_value(serde_json::json!({
+            "protocol": "openai",
+            "models": [{"id": NAMED_MODEL_ID, "display_name": display_name}],
+        }))
+        .unwrap();
+        let model = model_from_def(&def, ProviderKind::OpenAi, NAMED_MODEL_SLUG, NAMED_MODEL_ID);
+        assert_eq!(model.display_name(), display_name.unwrap_or(NAMED_MODEL_ID));
+        assert_eq!(model.id, NAMED_MODEL_ID);
+        assert_eq!(model.spec(), format!("{NAMED_MODEL_SLUG}/{NAMED_MODEL_ID}"));
+    }
 
     #[test_case(Protocol::Openai, ThinkingSupport::Yes, &[ThinkingConfig::Off, ThinkingConfig::Adaptive] ; "chat_toggle")]
     #[test_case(Protocol::Openai, ThinkingSupport::Required, &[ThinkingConfig::Adaptive] ; "chat_required")]

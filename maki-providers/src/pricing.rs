@@ -226,6 +226,7 @@ mod tests {
 
     fn model(id: &str, input_rate: f64) -> Model {
         Model {
+            display_name: None,
             id: id.into(),
             provider: Arc::from("anthropic"),
             tier: ModelTier::Medium,

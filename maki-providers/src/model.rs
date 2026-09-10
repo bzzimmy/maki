@@ -256,6 +256,7 @@ pub enum FastSupport {
 #[derive(Debug, Clone)]
 pub struct Model {
     pub id: String,
+    pub display_name: Option<String>,
     pub provider: Arc<str>,
     pub tier: ModelTier,
     pub family: ModelFamily,
@@ -277,6 +278,10 @@ pub struct Model {
 }
 
 impl Model {
+    pub fn display_name(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(&self.id)
+    }
+
     /// When no static entry matches (a freshly released model the table has not
     /// caught up to yet), fall back to the provider defaults so it still resolves.
     fn from_base(manifest: &ProviderManifest, slug: &str, model_id: &str) -> Self {
@@ -304,6 +309,7 @@ impl Model {
             .unwrap_or(manifest.fallback_context_window);
         Self {
             id: model_id.to_string(),
+            display_name: None,
             provider: Arc::from(slug),
             tier,
             family,
@@ -331,6 +337,7 @@ impl Model {
     ) -> Self {
         Self {
             id: model_id.to_string(),
+            display_name: None,
             provider: Arc::from(slug),
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
