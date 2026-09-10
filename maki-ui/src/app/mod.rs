@@ -878,6 +878,11 @@ impl App {
             return actions;
         }
 
+        if key::TOGGLE_THINKING.matches(key) {
+            self.active_chat().toggle_thinking();
+            return vec![];
+        }
+
         if key::SCROLL_PAGE_UP.matches(key) {
             let page = self.chats[self.active_chat].page();
             self.active_chat().scroll(page);

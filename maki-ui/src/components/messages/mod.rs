@@ -12,10 +12,10 @@ use self::scroll::{Layout, TailPart};
 use self::segment::{Segment, SegmentCache};
 
 use super::tool_display::{
-    RenderCtx, RoleStyle, ToolLines, append_annotation, append_right_info, assistant_style,
-    build_instructions_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
-    instructions_search_text, search_text_for, thinking_indicator, thinking_style,
-    truncate_to_header, user_style,
+    RenderCtx, RoleStyle, THINKING_PREVIEW_LINES, ToolLines, append_annotation, append_right_info,
+    assistant_style, build_instructions_lines, build_tool_lines, done_style, error_style,
+    finalized_thinking_lines, format_timestamp_now, instructions_search_text, search_text_for,
+    thinking_style, truncate_to_header, user_style,
 };
 use super::{DisplayMessage, DisplayRole, ToolRole, ToolStatus, code_view::SectionFlags};
 use crate::animation::spinner_str;
@@ -182,7 +182,10 @@ impl MessagesPanel {
 
     /// Hands back the index of the message, which [`Self::replace`] needs to
     /// correct it later.
-    pub fn push(&mut self, msg: DisplayMessage) -> usize {
+    pub fn push(&mut self, mut msg: DisplayMessage) -> usize {
+        if matches!(msg.role, DisplayRole::Thinking) {
+            msg.thinking_collapsed = !self.show_thinking;
+        }
         self.messages.push(msg);
         self.messages.len() - 1
     }
@@ -220,6 +223,24 @@ impl MessagesPanel {
 
     pub fn thinking_delta(&mut self, text: &str) {
         self.streaming_thinking.push(text);
+    }
+
+    pub fn toggle_thinking(&mut self) {
+        self.show_thinking = !self.show_thinking;
+        self.thinking_collapsed = !self.show_thinking;
+        for msg in &mut self.messages {
+            if matches!(msg.role, DisplayRole::Thinking) {
+                msg.thinking_collapsed = self.thinking_collapsed;
+            }
+        }
+        for seg in self.cache.segments_mut() {
+            if seg
+                .msg_index
+                .is_some_and(|i| matches!(self.messages[i].role, DisplayRole::Thinking))
+            {
+                seg.stale = true;
+            }
+        }
     }
 
     pub fn text_delta(&mut self, text: &str) {
@@ -779,24 +800,19 @@ impl MessagesPanel {
     }
 
     pub fn cadence(&self) -> Cadence {
-        // Collapsed thinking draws a line count, not the text, so its
-        // typewriter reveals nothing and never advances either, since only
-        // `view` ticks it. Believing it would pin the loop at full frame rate
-        // for the whole reasoning phase.
         let smooth = self.streaming_text.is_animating()
             || self.accent.is_animating()
-            || (self.streaming_thinking.is_animating() && !self.streaming_thinking_collapsed());
+            || self.streaming_thinking.is_animating();
         Cadence::any([
             // A running tool draws a spinner. Its output arriving is data, and
             // `tick` reports that separately.
-            Cadence::when(self.in_progress_count() > 0, Cadence::SPINNER),
+            Cadence::when(
+                self.in_progress_count() > 0 || !self.streaming_thinking.is_empty(),
+                Cadence::SPINNER,
+            ),
             Cadence::when(smooth, Cadence::SMOOTH),
             Cadence::when(self.show_idle_splash(), self.idle_splash.cadence()),
         ])
-    }
-
-    fn streaming_thinking_collapsed(&self) -> bool {
-        self.thinking_collapsed && !self.streaming_thinking.is_empty()
     }
 
     fn show_idle_splash(&self) -> bool {
@@ -848,12 +864,12 @@ impl MessagesPanel {
             self.update_spinners();
         }
 
-        let collapsed_thinking_lines = if self.streaming_thinking_collapsed() {
-            self.build_streaming_collapsed_lines()
+        let thinking_lines = if !self.streaming_thinking.is_empty() {
+            self.build_streaming_thinking_lines(width)
         } else {
             Vec::new()
         };
-        self.tail = self.build_tail(width, &collapsed_thinking_lines);
+        self.tail = self.build_tail(width, &thinking_lines);
 
         // The reflow window is picked from `scroll` and the bottom pin, and
         // the reflow changes the heights both are derived from: resolve
@@ -892,10 +908,7 @@ impl MessagesPanel {
             }
             let lines = match part {
                 TailPart::Spacer => &spacer_lines[..],
-                TailPart::Thinking if !collapsed_thinking_lines.is_empty() => {
-                    &collapsed_thinking_lines
-                }
-                TailPart::Thinking => self.streaming_thinking.cached_lines(),
+                TailPart::Thinking => &thinking_lines,
                 TailPart::Text => self.streaming_text.cached_lines(),
             };
             cursor.render(lines, h, None, false, frame);
@@ -943,11 +956,7 @@ impl MessagesPanel {
     /// `rebuild_line_cache` uses when the turn flushes. A [`ScrollPos`] in the
     /// tail keeps pointing at the same content across that flush only while
     /// the two agree, so anything added here needs its segment there.
-    fn build_tail(
-        &mut self,
-        width: u16,
-        collapsed_thinking: &[Line<'static>],
-    ) -> Vec<(TailPart, u16)> {
+    fn build_tail(&mut self, width: u16, thinking_lines: &[Line<'static>]) -> Vec<(TailPart, u16)> {
         let has_cached = self.cache.len() > 0;
         let mut tail: Vec<(TailPart, u16)> = Vec::new();
         // Mirrors `SegmentCache::push_spacer_if_needed`: a part is separated
@@ -959,11 +968,8 @@ impl MessagesPanel {
             tail.push((part, height));
         };
 
-        if self.streaming_thinking_collapsed() {
-            push(TailPart::Thinking, collapsed_thinking.len() as u16);
-        } else if !self.streaming_thinking.is_empty() {
-            let h = wrap::total_rows(self.streaming_thinking.render_lines(width), width);
-            push(TailPart::Thinking, h);
+        if !self.streaming_thinking.is_empty() {
+            push(TailPart::Thinking, wrap::total_rows(thinking_lines, width));
         }
         if !self.streaming_text.is_empty() {
             let h = wrap::total_rows(self.streaming_text.render_lines(width), width);
@@ -1280,33 +1286,41 @@ impl MessagesPanel {
         self.messages.push(msg);
     }
 
-    fn build_streaming_collapsed_lines(&self) -> Vec<Line<'static>> {
-        thinking_indicator(self.streaming_thinking.line_count(), true)
+    fn build_streaming_thinking_lines(&mut self, width: u16) -> Vec<Line<'static>> {
+        let collapsed = self.thinking_collapsed;
+        let content = self.streaming_thinking.render_thinking_lines(width);
+        let start = if collapsed {
+            content.len().saturating_sub(THINKING_PREVIEW_LINES)
+        } else {
+            0
+        };
+        let mut lines = vec![Line::styled(
+            format!(
+                "{} thinking… (alt+t to {})",
+                spinner_str(self.started_at.elapsed().as_millis()),
+                if collapsed { "expand" } else { "collapse" }
+            ),
+            theme::current().thinking,
+        )];
+        lines.extend_from_slice(&content[start..]);
+        lines
     }
 
-    fn build_cached_thinking_indicator(&self, text: &str) -> Vec<Line<'static>> {
-        thinking_indicator(logical_line_count(text), true)
-    }
-
-    /// `pos` is past the cached segments, so it names a tail part: the click
-    /// toggles only when that part is the collapsed thinking indicator.
+    /// `pos` is past the cached segments, so it names a tail part.
     fn try_toggle_collapsed_thinking(&mut self, pos: ScrollPos) -> bool {
         let part = pos
             .seg
             .checked_sub(self.cache.len())
             .and_then(|i| self.tail.get(i))
             .map(|&(p, _)| p);
-        if part != Some(TailPart::Thinking) || !self.streaming_thinking_collapsed() {
+        if part != Some(TailPart::Thinking) {
             return false;
         }
-        self.thinking_collapsed = false;
+        self.thinking_collapsed = !self.thinking_collapsed;
         true
     }
 
     fn try_toggle_cached_thinking(&mut self, msg_idx: Option<usize>, width: u16) -> bool {
-        if self.show_thinking {
-            return false;
-        }
         let Some(idx) = msg_idx else { return false };
         let Some(msg) = self.messages.get_mut(idx) else {
             return false;
@@ -1327,19 +1341,7 @@ impl MessagesPanel {
         else {
             return;
         };
-        let lines = if collapsed {
-            self.build_cached_thinking_indicator(&text)
-        } else {
-            let style = thinking_style();
-            text_to_lines(
-                &text,
-                style.prefix,
-                style.text_style,
-                style.prefix_style,
-                width,
-                None,
-            )
-        };
+        let lines = finalized_thinking_lines(&text, width, collapsed);
         let seg_idx = self
             .cache
             .segments()
@@ -1440,13 +1442,6 @@ impl MessagesPanel {
                     self.upsert_instruction_segment(&id, &blocks);
                 }
             } else {
-                if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
-                    let text = msg.text.clone();
-                    let lines = self.build_cached_thinking_indicator(&text);
-                    self.cache.push_spacer_if_needed();
-                    self.cache.push(Segment::with_lines(lines, Some(i)));
-                    continue;
-                }
                 let lines = build_message_lines(msg, self.viewport_width);
                 self.cache.push_spacer_if_needed();
                 self.cache.push(Segment::with_lines(lines, Some(i)));
@@ -1526,7 +1521,7 @@ impl MessagesPanel {
             return;
         };
         seg.stale = false;
-        let (tool_id, msg_idx) = (seg.tool_id.clone(), seg.msg_index);
+        let tool_id = seg.tool_id.clone();
 
         if let Some(tid) = tool_id {
             let parent = segment::instruction_parent(&tid)
@@ -1536,21 +1531,7 @@ impl MessagesPanel {
             return;
         }
 
-        let Some(msg_idx) = msg_idx else {
-            return;
-        };
-
-        let collapsed = self
-            .messages
-            .get(msg_idx)
-            .is_some_and(|m| matches!(m.role, DisplayRole::Thinking) && m.thinking_collapsed);
-        if collapsed {
-            // Geometry is width-independent, but a theme change marks segments
-            // stale too; rebuild so spans pick up the new palette.
-            self.rebuild_thinking_segment(msg_idx, width);
-        } else {
-            self.reflow_text_segment(seg_idx, width);
-        }
+        self.reflow_text_segment(seg_idx, width);
     }
 
     fn reflow_text_segment(&mut self, seg_idx: usize, width: u16) {
@@ -1588,27 +1569,20 @@ fn message_prefix(msg: &DisplayMessage, style: &RoleStyle) -> &'static str {
     }
 }
 
-/// Carries the role prefix so a query can hit either the prose or the "you>"
-/// and "thinking>" markers the reader sees. Collapsed thinking needs no case of
-/// its own: its indicator is drawn from the same prefix.
+/// Includes role names and the full text so collapsed reasoning stays searchable.
 fn message_search_text(msg: &DisplayMessage) -> String {
     let style = message_style(&msg.role);
     format!("{}{}", message_prefix(msg, &style), msg.text)
 }
 
-fn logical_line_count(text: &str) -> usize {
-    if text.is_empty() {
-        0
-    } else {
-        text.bytes().filter(|&b| b == b'\n').count() + 1
-    }
-}
-
-/// Builds ratatui lines for a non-Tool, non-collapsed-Thinking message at the
+/// Builds ratatui lines for a non-Tool message at the
 /// given width. Shared by `rebuild_line_cache` (new messages) and
 /// `reflow_text_segment` (stale-on-resize messages) so both paths produce
 /// identical segments.
 fn build_message_lines(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
+    if matches!(msg.role, DisplayRole::Thinking) {
+        return finalized_thinking_lines(&msg.text, width, msg.thinking_collapsed);
+    }
     let style = message_style(&msg.role);
     let prefix = message_prefix(msg, &style);
     let mut lines = if style.use_markdown {

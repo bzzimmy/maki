@@ -1,3 +1,4 @@
+use super::tool_display::thinking_lines;
 use crate::animation::Typewriter;
 use crate::markdown::paint_semantic;
 use crate::theme;
@@ -121,12 +122,12 @@ impl StreamingContent {
         self.typewriter.is_empty()
     }
 
-    pub fn line_count(&self) -> usize {
-        self.typewriter.buffer_line_count()
-    }
-
     pub fn is_animating(&self) -> bool {
         self.typewriter.is_animating()
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.typewriter.buffer_line_count()
     }
 
     pub fn set_style(&mut self, prefix: &'static str, text_style: Style, prefix_style: Style) {
@@ -150,6 +151,17 @@ impl StreamingContent {
     }
 
     pub fn cached_lines(&self) -> &[Line<'static>] {
+        &self.cache.lines
+    }
+
+    pub fn render_thinking_lines(&mut self, width: u16) -> &[Line<'static>] {
+        self.typewriter.tick();
+        let text = self.typewriter.visible();
+        let key = CacheKey::for_text(text, width, theme::generation());
+        if self.cache.key != Some(key) {
+            self.cache.lines = thinking_lines(text, width);
+            self.cache.key = Some(key);
+        }
         &self.cache.lines
     }
 

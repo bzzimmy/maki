@@ -13,6 +13,7 @@ On macOS, some bindings use Option or Fn keys instead (run `/help` for exact key
 
 | Key | Action |
 |-----|--------|
+| `Alt+T` | Expand / collapse reasoning |
 | `Ctrl+C` | Quit / clear input |
 | `Ctrl+H` | Show keybindings |
 | `Ctrl+F` | Search messages |

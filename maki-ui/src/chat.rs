@@ -425,6 +425,10 @@ impl Chat {
         self.messages_panel.in_progress_count()
     }
 
+    pub fn toggle_thinking(&mut self) {
+        self.messages_panel.toggle_thinking();
+    }
+
     #[cfg(test)]
     pub fn last_message_text(&self) -> &str {
         self.messages_panel.last_message_text()

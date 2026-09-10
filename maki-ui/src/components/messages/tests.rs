@@ -440,12 +440,9 @@ const THINKING_TEXT: &str = "a long chain of reasoning";
 const HIGHLIGHTED_CODE: &str = "fn main() {}";
 const HIGHLIGHT_DEADLINE: Duration = Duration::from_secs(10);
 
-/// Only `view` advances a typewriter, and collapsed thinking is never drawn,
-/// so its reveal can never finish. Believing it would hold the loop at full
-/// frame rate for as long as the model reasons.
 #[test_case(true  => Cadence::SMOOTH ; "expanded_thinking_reveals")]
-#[test_case(false => Cadence::IDLE   ; "collapsed_thinking_reveals_nothing")]
-fn thinking_animates_only_while_it_is_on_screen(show_thinking: bool) -> Cadence {
+#[test_case(false => Cadence::SMOOTH ; "collapsed_preview_reveals")]
+fn thinking_animates_in_both_display_modes(show_thinking: bool) -> Cadence {
     let config = UiConfig {
         show_thinking,
         ..UiConfig::default()
@@ -456,7 +453,7 @@ fn thinking_animates_only_while_it_is_on_screen(show_thinking: bool) -> Cadence 
 
     assert!(
         panel.streaming_thinking.is_animating(),
-        "the typewriter is mid-reveal, it just has nowhere to draw"
+        "the typewriter is mid-reveal"
     );
     panel.cadence()
 }
@@ -1964,7 +1961,7 @@ fn rebake_without_channel_is_noop() {
 }
 
 #[test]
-fn hide_collapses_streaming_thinking() {
+fn collapsed_streaming_thinking_shows_latest_two_lines() {
     let mut panel = MessagesPanel::new(
         UiConfig {
             show_thinking: false,
@@ -1978,16 +1975,16 @@ fn hide_collapses_streaming_thinking() {
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("thinking> ..."),
+        text.contains("thinking…"),
         "collapsed view should show hint; got: {text}"
     );
     assert!(
-        text.contains("3 lines"),
-        "should show live line counter; got: {text}"
+        text.contains("line two") && text.contains("line three"),
+        "should show the latest two lines; got: {text}"
     );
     assert!(
-        text.contains("click to expand"),
-        "should hint click-to-expand; got: {text}"
+        text.contains("alt+t to expand"),
+        "should show the expansion shortcut; got: {text}"
     );
     assert!(
         !text.contains("line one"),
@@ -2025,7 +2022,7 @@ fn hide_click_expands_streaming_thinking() {
 }
 
 #[test]
-fn hide_keeps_cached_thinking_as_indicator() {
+fn short_completed_thinking_fits_in_preview() {
     let mut panel = MessagesPanel::new(
         UiConfig {
             show_thinking: false,
@@ -2042,25 +2039,25 @@ fn hide_keeps_cached_thinking_as_indicator() {
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("thinking> ..."),
-        "cached thinking should persist as an indicator, not hide; got: {text}"
+        text.contains("● reasoning here"),
+        "short thinking should fit in the preview; got: {text}"
     );
     assert!(
-        text.contains("(1 lines)"),
-        "footer always shows the line count; got: {text}"
+        !text.contains("more lines"),
+        "short thinking needs no truncation footer; got: {text}"
     );
     assert!(
-        text.contains("click to expand"),
-        "footer should hint click-to-expand; got: {text}"
+        !text.contains("alt+t to expand"),
+        "short thinking needs no expansion hint; got: {text}"
     );
     assert!(
-        !text.contains("reasoning here"),
-        "reasoning must stay hidden in the indicator; got: {text}"
+        text.contains("reasoning here"),
+        "reasoning should appear in the preview; got: {text}"
     );
 }
 
 #[test]
-fn full_default_renders_streaming_thinking() {
+fn default_preview_renders_short_streaming_thinking() {
     let mut panel = MessagesPanel::new(UiConfig::default(), EventHandle::disconnected_for_test());
     panel.streaming_thinking.set_buffer("visible reasoning");
     let terminal = render(&mut panel, 80, 10);
@@ -2072,7 +2069,7 @@ fn full_default_renders_streaming_thinking() {
 }
 
 #[test]
-fn hide_cached_thinking_persists_as_indicator() {
+fn completed_thinking_previews_first_two_lines() {
     let mut panel = MessagesPanel::new(
         UiConfig {
             show_thinking: false,
@@ -2090,21 +2087,24 @@ fn hide_cached_thinking_persists_as_indicator() {
     let terminal = render(&mut panel, 80, 12);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("thinking> ..."),
-        "cached thinking should persist as an indicator, not hide; got: {text}"
+        text.contains("● cached line 1"),
+        "completed thinking should show its first line; got: {text}"
     );
-    assert!(text.contains("(7 lines)"), "footer line count; got: {text}");
     assert!(
-        text.contains("click to expand"),
-        "footer should hint click-to-expand; got: {text}"
+        text.contains("(5 more lines"),
+        "footer line count; got: {text}"
+    );
+    assert!(
+        text.contains("alt+t to expand"),
+        "footer should show the expansion shortcut; got: {text}"
     );
     assert!(
         !text.contains("cached line 7"),
         "reasoning must stay hidden in the indicator; got: {text}"
     );
     assert!(
-        !text.contains("cached line 1"),
-        "reasoning must stay hidden in the indicator; got: {text}"
+        text.contains("cached line 2"),
+        "the first two lines should appear; got: {text}"
     );
 }
 
@@ -2163,12 +2163,12 @@ fn stream_reset_clears_thinking_expand_state() {
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("thinking> ..."),
+        text.contains("alt+t to expand"),
         "new stream after reset should collapse again; got: {text}"
     );
     assert!(
-        !text.contains("fresh reasoning"),
-        "new stream must stay hidden; got: {text}"
+        text.contains("fresh reasoning"),
+        "new stream should show its preview; got: {text}"
     );
 }
 
@@ -2186,6 +2186,38 @@ fn height_measures_the_width_asked_for_even_while_stale() {
         2,
         "a stale segment must report what its lines really draw as"
     );
+}
+
+#[test_case(false; "streaming")]
+#[test_case(true; "resumed_history")]
+fn reasoning_toggle_survives_flush_and_resize(history: bool) {
+    const REASONING: &str = "first thought\nsecond thought\nlast thought";
+    const FIRST: &str = "first thought";
+    const LAST: &str = "last thought";
+    let mut panel = MessagesPanel::new(UiConfig::default(), EventHandle::disconnected_for_test());
+    if history {
+        panel.load_messages(vec![DisplayMessage::new(
+            DisplayRole::Thinking,
+            REASONING.into(),
+        )]);
+    } else {
+        panel.streaming_thinking.set_buffer(REASONING);
+    }
+    let text = buffer_text(&render(&mut panel, 80, 20));
+    assert_eq!(text.contains(FIRST), history);
+    assert_eq!(text.contains(LAST), !history);
+
+    panel.toggle_thinking();
+    let text = buffer_text(&render(&mut panel, 80, 20));
+    assert!(text.contains(FIRST) && text.contains(LAST));
+    panel.flush();
+    let text = buffer_text(&render(&mut panel, 40, 20));
+    assert!(text.contains(FIRST) && text.contains(LAST));
+
+    panel.toggle_thinking();
+    let text = buffer_text(&render(&mut panel, 80, 20));
+    assert!(text.contains(FIRST));
+    assert!(!text.contains(LAST));
 }
 
 const ROW_WALK_WIDTH: u16 = 10;
@@ -2356,8 +2388,8 @@ fn reflow_rebuilds_collapsed_thinking_instead_of_only_stamping() {
     panel.push(m);
     render(&mut panel, 80, 10);
     assert!(
-        msg_seg_text(&panel, 0).contains("(2 lines)"),
-        "indicator should report the initial line count"
+        !msg_seg_text(&panel, 0).contains("more lines"),
+        "two lines fit in the preview"
     );
 
     // Change what the indicator renders, then mark it stale the way a theme
@@ -2367,7 +2399,7 @@ fn reflow_rebuilds_collapsed_thinking_instead_of_only_stamping() {
     render(&mut panel, 80, 10);
 
     assert!(
-        msg_seg_text(&panel, 0).contains("(4 lines)"),
+        msg_seg_text(&panel, 0).contains("(2 more lines"),
         "stale collapsed-thinking segment must be rebuilt, not just stamped; got: {}",
         msg_seg_text(&panel, 0)
     );

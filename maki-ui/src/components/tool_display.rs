@@ -44,6 +44,69 @@ const INSTRUCTIONS_TOOL: &str = "load";
 const UNNAMED_TOOL: &str = "?";
 const THINKING_HIDDEN_HEADER: &str = "thinking> ...";
 const THINKING_EXPAND_HINT: &str = " (click to expand)";
+pub(crate) const THINKING_PREVIEW_LINES: usize = 2;
+
+pub(crate) fn thinking_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+    let style = theme::current().thinking;
+    let content_width = usize::from(width)
+        .saturating_sub(TOOL_BODY_INDENT.width())
+        .max(1);
+    let mut lines = Vec::new();
+    for logical in text.split('\n') {
+        let mut body = String::new();
+        let mut used = 0;
+        for word in logical.split_inclusive(char::is_whitespace) {
+            let word_width = UnicodeWidthStr::width(word.trim_end());
+            if used > 0 && used + word_width > content_width {
+                lines.push(Line::styled(
+                    format!("{TOOL_BODY_INDENT}{}", body.trim_end()),
+                    style,
+                ));
+                body.clear();
+                used = 0;
+            }
+            let span = Span::raw(word);
+            for grapheme in span.styled_graphemes(style) {
+                let size = grapheme.symbol.width();
+                if used + size > content_width {
+                    if grapheme.symbol.chars().all(char::is_whitespace) {
+                        continue;
+                    }
+                    lines.push(Line::styled(format!("{TOOL_BODY_INDENT}{body}"), style));
+                    body.clear();
+                    used = 0;
+                }
+                body.push_str(grapheme.symbol);
+                used += size;
+            }
+        }
+        lines.push(Line::styled(format!("{TOOL_BODY_INDENT}{body}"), style));
+    }
+    lines
+}
+
+pub(crate) fn finalized_thinking_lines(
+    text: &str,
+    width: u16,
+    collapsed: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = thinking_lines(text, width);
+    let remaining = lines.len().saturating_sub(THINKING_PREVIEW_LINES);
+    if collapsed && remaining > 0 {
+        lines.truncate(THINKING_PREVIEW_LINES);
+        lines.push(Line::styled(
+            format!("{TOOL_BODY_INDENT}… ({remaining} more lines, alt+t to expand)"),
+            theme::current().thinking,
+        ));
+    }
+    if let Some(first) = lines.first_mut() {
+        first.spans[0].content = first.spans[0]
+            .content
+            .replacen(TOOL_BODY_INDENT, TOOL_INDICATOR, 1)
+            .into();
+    }
+    lines
+}
 
 pub struct RoleStyle {
     pub prefix: &'static str,
@@ -820,6 +883,19 @@ mod tests {
     use maki_agent::types::{DefaultColor, InlineStyle};
     use maki_agent::{SnapshotLine, SnapshotSpan, TextOutput, ToolInput, ToolOutput};
     use test_case::test_case;
+
+    #[test_case("one two three", 7, vec!["  one", "  two", "  three"]; "word_boundaries")]
+    #[test_case("abcdefgh", 6, vec!["  abcd", "  efgh"]; "long_word")]
+    #[test_case("你好世界", 6, vec!["  你好", "  世界"]; "wide_characters")]
+    #[test_case("👩‍💻👩‍💻", 4, vec!["  👩‍💻", "  👩‍💻"]; "joined_emoji")]
+    #[test_case("abcd ", 6, vec!["  abcd"]; "trailing_space_at_boundary")]
+    fn reasoning_wraps_into_indented_terminal_rows(text: &str, width: u16, expected: Vec<&str>) {
+        let lines: Vec<String> = thinking_lines(text, width)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(lines, expected);
+    }
 
     fn test_rctx(width: u16) -> RenderCtx<'static> {
         RenderCtx {
