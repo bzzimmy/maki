@@ -233,6 +233,7 @@ mod tests {
             family: ModelFamily::Claude,
             supports_tool_examples_override: None,
             thinking_override: None,
+            reasoning_efforts: Vec::new(),
             supports_vision_override: None,
             supports_fast_override: None,
             pricing: ModelPricing {

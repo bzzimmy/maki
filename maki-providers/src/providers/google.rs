@@ -701,6 +701,7 @@ mod tests {
             supports_fast_override: None,
             supports_tool_examples_override: None,
             thinking_override: None,
+            reasoning_efforts: Vec::new(),
             pricing: ModelPricing::default(),
             discovered_free: false,
             max_output_tokens: Some(8192),

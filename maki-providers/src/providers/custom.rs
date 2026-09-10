@@ -15,7 +15,7 @@ use crate::manifest::ManifestRegistry;
 use crate::model::{FastPricing, Model, ModelInfo, ModelPricing, ModelTier, ThinkingSupport};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
 use crate::providers::Timeouts;
-use crate::types::ThinkingConfig;
+use crate::types::{EffortDialect, ThinkingConfig};
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
 
 static CUSTOM_OPENAI_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
@@ -56,11 +56,19 @@ fn openai_thinking_levels(model: &Model, protocol: Protocol) -> Vec<ThinkingConf
     if protocol == Protocol::OpenaiResponses || !model.supports_thinking() {
         return Vec::new();
     }
-    if model.requires_thinking() {
+    let mut levels = if model.requires_thinking() {
         vec![ThinkingConfig::Adaptive]
     } else {
         vec![ThinkingConfig::Off, ThinkingConfig::Adaptive]
-    }
+    };
+    levels.extend(
+        model
+            .reasoning_efforts
+            .iter()
+            .copied()
+            .map(ThinkingConfig::Effort),
+    );
+    levels
 }
 
 pub fn base_kind(slug: &str) -> Option<ProviderKind> {
@@ -126,6 +134,11 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
 /// and id lookup can share one `providers.toml` read instead of loading twice.
 fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &str) -> Model {
     let declared = def.models.iter().find(|m| m.id == model_id);
+    let mut reasoning_efforts = declared
+        .map(|m| m.reasoning_efforts.clone())
+        .unwrap_or_default();
+    reasoning_efforts.sort_unstable();
+    reasoning_efforts.dedup();
     let tier = declared
         .map(|m| ModelTier::from(m.tier))
         .unwrap_or(ModelTier::Medium);
@@ -143,6 +156,7 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
     let thinking_override = ThinkingSupport::from_flags(
         declared
             .and_then(|m| m.supports_thinking)
+            .or_else(|| (!reasoning_efforts.is_empty()).then_some(true))
             .or_else(|| ManifestRegistry::get(&kind.to_string()).map(|m| m.supports_thinking)),
         declared.and_then(|m| m.requires_thinking).unwrap_or(false),
     );
@@ -170,6 +184,7 @@ fn model_from_def(def: &ProviderDef, kind: ProviderKind, slug: &str, model_id: &
         family: kind.family(),
         supports_tool_examples_override,
         thinking_override,
+        reasoning_efforts,
         supports_vision_override,
         supports_fast_override: None,
         pricing,
@@ -290,6 +305,24 @@ struct CustomOpenAiProvider {
     protocol: Protocol,
 }
 
+fn apply_openai_thinking(body: &mut Value, model: &Model, thinking: ThinkingConfig) {
+    if thinking == ThinkingConfig::Off {
+        if !model.requires_thinking() {
+            body["thinking"] = serde_json::json!({"type": "disabled"});
+        }
+    } else if model.supports_thinking() && !model.reasoning_efforts.is_empty() {
+        thinking.apply_reasoning_effort(
+            body,
+            &EffortDialect {
+                supported: &model.reasoning_efforts,
+                adaptive: None,
+                off: None,
+            },
+            model,
+        );
+    }
+}
+
 impl Provider for CustomOpenAiProvider {
     fn stream_message<'a>(
         &'a self,
@@ -319,9 +352,7 @@ impl Provider for CustomOpenAiProvider {
             }
 
             let mut body = self.compat.build_body(model, messages, system, tools);
-            if matches!(opts.thinking, ThinkingConfig::Off) {
-                body["thinking"] = serde_json::json!({"type": "disabled"});
-            }
+            apply_openai_thinking(&mut body, model, opts.thinking);
             self.compat
                 .do_stream(model, &[], &body, event_tx, &auth)
                 .await
@@ -338,11 +369,56 @@ impl Provider for CustomOpenAiProvider {
 mod tests {
     use super::*;
 
+    use crate::types::Effort;
     use test_case::test_case;
 
     const NAMED_MODEL_ID: &str = "vendor/model-20260901";
     const NAMED_MODEL_SLUG: &str = "custom-display-name-test";
     const MODEL_DISPLAY_NAME: &str = "Coding Model";
+
+    fn reasoning_model(required: bool) -> Model {
+        let def: ProviderDef = serde_json::from_value(serde_json::json!({
+            "protocol": "openai",
+            "models": [{
+                "id": NAMED_MODEL_ID,
+                "reasoning_efforts": ["xhigh", "low", "medium", "low"],
+                "requires_thinking": required,
+            }],
+        }))
+        .unwrap();
+        model_from_def(&def, ProviderKind::OpenAi, NAMED_MODEL_SLUG, NAMED_MODEL_ID)
+    }
+
+    #[test_case(false; "optional_thinking")]
+    #[test_case(true; "required_thinking")]
+    fn declared_efforts_drive_thinking_cycle(required: bool) {
+        let model = reasoning_model(required);
+        let mut expected = vec![ThinkingConfig::Adaptive];
+        expected.extend([Effort::Low, Effort::Medium, Effort::XHigh].map(ThinkingConfig::Effort));
+        if !required {
+            expected.insert(0, ThinkingConfig::Off);
+        }
+        assert!(model.supports_thinking());
+        assert_eq!(openai_thinking_levels(&model, Protocol::Openai), expected);
+    }
+
+    #[test_case(ThinkingConfig::Effort(Effort::XHigh), false, serde_json::json!({"reasoning_effort": "xhigh"}); "declared_effort")]
+    #[test_case(ThinkingConfig::Effort(Effort::High), false, serde_json::json!({"reasoning_effort": "medium"}); "unsupported_effort_snaps")]
+    #[test_case(ThinkingConfig::Adaptive, false, serde_json::json!({}); "endpoint_default")]
+    #[test_case(ThinkingConfig::Off, false, serde_json::json!({"thinking": {"type": "disabled"}}); "optional_off")]
+    #[test_case(ThinkingConfig::Off, true, serde_json::json!({}); "required_off_uses_default")]
+    fn declared_efforts_control_request(thinking: ThinkingConfig, required: bool, expected: Value) {
+        let model = reasoning_model(required);
+        let mut body = serde_json::json!({});
+        apply_openai_thinking(&mut body, &model, thinking);
+        assert_eq!(body, expected);
+
+        let mut legacy = model;
+        legacy.reasoning_efforts.clear();
+        let mut body = serde_json::json!({});
+        apply_openai_thinking(&mut body, &legacy, ThinkingConfig::Effort(Effort::High));
+        assert_eq!(body, serde_json::json!({}));
+    }
 
     #[test_case(Some(MODEL_DISPLAY_NAME); "named")]
     #[test_case(None; "id_fallback")]

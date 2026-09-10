@@ -295,6 +295,7 @@ mod tests {
     fn test_model(thinking: bool) -> Model {
         Model {
             display_name: None,
+            reasoning_efforts: Vec::new(),
             id: "grok-4.6".into(),
             provider: "xai".into(),
             tier: ModelTier::Strong,

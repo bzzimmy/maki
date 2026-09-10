@@ -265,6 +265,7 @@ pub struct Model {
     /// that stream through a native provider chosen at runtime. `None` falls
     /// back to discovery, then the provider manifest.
     pub thinking_override: Option<ThinkingSupport>,
+    pub reasoning_efforts: Vec<Effort>,
     pub supports_vision_override: Option<bool>,
     pub supports_fast_override: Option<FastSupport>,
     pub pricing: ModelPricing,
@@ -315,6 +316,7 @@ impl Model {
             family,
             supports_tool_examples_override: None,
             thinking_override: None,
+            reasoning_efforts: Vec::new(),
             supports_vision_override: None,
             supports_fast_override: None,
             pricing,
@@ -343,6 +345,7 @@ impl Model {
             family: ModelFamily::Generic,
             supports_tool_examples_override: None,
             thinking_override: ThinkingSupport::from_flags(Some(meta.supports_thinking), false),
+            reasoning_efforts: Vec::new(),
             supports_vision_override: Some(meta.supports_vision),
             supports_fast_override: None,
             pricing: ModelPricing {

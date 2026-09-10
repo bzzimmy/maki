@@ -189,6 +189,7 @@ tier = "strong"
 context_window = 200000
 max_output_tokens = 32000
 supports_thinking = true
+reasoning_efforts = ["low", "high", "max"]
 supports_vision = false
 ```
 
@@ -220,6 +221,7 @@ supports_vision = false
 | `max_output_tokens` | u32 | protocol default | Max completion tokens |
 | `supports_tool_examples` | bool | protocol default | |
 | `supports_thinking` | bool | protocol default | |
+| `reasoning_efforts` | string array | `[]` | Custom `openai` chat providers only. Supported levels for Shift+Tab and `reasoning_effort` requests: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A non-empty list enables thinking unless explicitly disabled. Adaptive uses the endpoint default. Unsupported efforts snap to the closest lower supported level, or the lowest available |
 | `requires_thinking` | bool | false | For APIs that reject requests with thinking disabled. Implies `supports_thinking` and raises thinking to minimal effort when off (including compaction) |
 | `supports_vision` | bool | protocol default | When false, image input and `view_image` are off |
 | `pricing_input` / `pricing_output` | f64 | 0 | USD per 1M tokens |

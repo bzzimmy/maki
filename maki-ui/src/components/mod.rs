@@ -401,6 +401,7 @@ pub(crate) fn test_model() -> maki_providers::Model {
         family: maki_providers::ModelFamily::Claude,
         supports_tool_examples_override: None,
         thinking_override: None,
+        reasoning_efforts: Vec::new(),
         supports_vision_override: Some(true),
         supports_fast_override: None,
         pricing: test_pricing(),

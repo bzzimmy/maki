@@ -8,6 +8,7 @@ use std::str::FromStr;
 use tracing::debug;
 
 use maki_storage::paths;
+use maki_storage::sessions::Effort;
 
 const PROVIDERS_FILE: &str = "providers.toml";
 const BAD_CONFIG_EXIT_CODE: i32 = 2;
@@ -42,6 +43,8 @@ pub struct ModelDef {
     pub supports_tool_examples: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_thinking: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_efforts: Vec<Effort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires_thinking: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

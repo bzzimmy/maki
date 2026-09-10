@@ -1281,6 +1281,7 @@ mod tests {
             family: provider.family(),
             supports_tool_examples_override: None,
             thinking_override: None,
+            reasoning_efforts: Vec::new(),
             supports_vision_override: Some(provider.family().supports_vision()),
             supports_fast_override: None,
             pricing: crate::model::ModelPricing::default(),

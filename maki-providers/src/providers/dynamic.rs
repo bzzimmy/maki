@@ -93,6 +93,7 @@ impl ScriptModel {
         Model {
             id,
             display_name: None,
+            reasoning_efforts: Vec::new(),
             provider: Arc::from(slug),
             tier,
             family: base.family(),
