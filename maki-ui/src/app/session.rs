@@ -129,7 +129,7 @@ impl App {
                 self.recoverable_queue.clone()
             },
             thinking: Some(state.thinking.into()),
-            fast: state.fast || state.pending_fast,
+            fast: state.fast_intent(),
             workflow: state.workflow,
             yolo: self.permissions.persisted_yolo(),
         }
@@ -309,7 +309,7 @@ impl App {
         session.meta = SessionMeta {
             mode: Some(self.state.mode.into()),
             thinking: Some(self.state.thinking.into()),
-            fast: self.state.fast || self.state.pending_fast,
+            fast: self.state.fast_intent(),
             workflow: self.state.workflow,
             plan_path: None,
             plan_written: false,
@@ -425,18 +425,45 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::app::tests::test_app;
+    use crate::app::{App, FAST_OFF_MSG, FAST_PENDING_MSG};
     use crate::components::command::ParsedCommand;
     use maki_providers::model::FastSupport;
     use test_case::test_case;
 
-    #[test_case(false ; "pending_survives_snapshot_and_inheritance")]
-    #[test_case(true ; "explicit_off_cancels_pending")]
-    fn pending_fast_persistence(cancel: bool) {
+    fn pending_app() -> App {
         let mut app = test_app();
         app.state.model.supports_fast_override = Some(FastSupport::Pending);
-        app.state.fast = false;
-        app.state.pending_fast = true;
+        app
+    }
+
+    /// A `/fast` typed before the model list lands has to outlive the snapshot
+    /// a new session inherits, otherwise the answer arrives and the wish is
+    /// already gone.
+    #[test_case(false ; "kept")]
+    #[test_case(true ; "cancelled")]
+    fn pending_fast_survives_snapshot_until_discovery_answers(cancel: bool) {
+        let mut app = pending_app();
+        app.set_fast(true).unwrap();
         if cancel {
+            app.set_fast(false).unwrap();
+        }
+        assert!(!app.state.fast);
+        assert_eq!(app.state.pending_fast, !cancel);
+        assert_eq!(app.build_meta().fast, !cancel);
+        assert_eq!(app.blank_session().meta.fast, !cancel);
+
+        let mut model = app.state.model.clone();
+        model.supports_fast_override = Some(FastSupport::Supported);
+        app.update_model(&model);
+        assert_eq!(app.state.fast, !cancel);
+        assert!(!app.state.pending_fast);
+        assert_eq!(app.build_meta().fast, !cancel);
+    }
+
+    #[test]
+    fn fast_command_flashes_pending_while_discovery_runs() {
+        let mut app = pending_app();
+        for expected in [FAST_PENDING_MSG, FAST_OFF_MSG] {
             app.execute_command(
                 ParsedCommand {
                     name: "/fast".into(),
@@ -445,15 +472,9 @@ mod tests {
                 },
                 0,
             );
+            assert_eq!(app.status_bar.flash_text(), Some(expected));
+            assert!(!app.state.fast);
         }
-        assert!(!app.state.fast);
-        assert_eq!(app.build_meta().fast, !cancel);
-        assert_eq!(app.blank_session().meta.fast, !cancel);
-        let mut model = app.state.model.clone();
-        model.supports_fast_override = Some(FastSupport::Supported);
-        app.update_model(&model);
-        assert_eq!(app.state.fast, !cancel);
         assert!(!app.state.pending_fast);
-        assert_eq!(app.build_meta().fast, !cancel);
     }
 }

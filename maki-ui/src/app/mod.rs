@@ -96,6 +96,7 @@ const FLASH_NO_PLAN: &str = "No plan file";
 const FAST_UNSUPPORTED_MSG: &str = "Fast mode needs Anthropic Opus 4.6+ with an API key, or an eligible Codex model with a ChatGPT subscription";
 const THINKING_UNSUPPORTED_MSG: &str = "Thinking requires a model that supports it";
 const FAST_ON_MSG: &str = "Fast mode: on";
+const FAST_PENDING_MSG: &str = "Fast mode: pending model discovery";
 const FAST_OFF_MSG: &str = "Fast mode: off";
 const WORKFLOW_ON_MSG: &str = "Workflow mode: on";
 const WORKFLOW_OFF_MSG: &str = "Workflow mode: off";
@@ -435,11 +436,11 @@ impl App {
     }
 
     pub(crate) fn set_fast(&mut self, fast: bool) -> Result<(), String> {
-        if fast && !self.state.model.supports_fast() {
+        let model = &self.state.model;
+        if fast && !model.supports_fast() && !model.fast_pending() {
             return Err(FAST_UNSUPPORTED_MSG.into());
         }
-        self.state.fast = fast;
-        self.state.pending_fast = false;
+        self.state.set_fast(fast);
         Ok(())
     }
 
@@ -1473,9 +1474,17 @@ impl App {
                 vec![]
             }
             "/fast" => {
-                let fast = !(self.state.fast || self.state.pending_fast);
-                match self.set_fast(fast) {
-                    Ok(()) => self.flash(if fast { FAST_ON_MSG } else { FAST_OFF_MSG }.into()),
+                match self.set_fast(!self.state.fast_intent()) {
+                    Ok(()) => self.flash(
+                        if self.state.pending_fast {
+                            FAST_PENDING_MSG
+                        } else if self.state.fast {
+                            FAST_ON_MSG
+                        } else {
+                            FAST_OFF_MSG
+                        }
+                        .into(),
+                    ),
                     Err(msg) => self.flash(msg),
                 }
                 vec![]

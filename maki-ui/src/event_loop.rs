@@ -335,6 +335,12 @@ struct SessionRuntime {
     /// so a new task would inherit the old one's status.
     last_tasks: Vec<(Arc<str>, TaskStatus)>,
     notifications: RunNotificationState,
+    /// The slot this session last synced from, compared by identity rather
+    /// than field by field: discovery fills in things like fast support long
+    /// after the model was built, and a hand written list would miss them.
+    /// `None` until the first sync, which is what pulls a restored session off
+    /// its own saved model and onto the one that is selected now.
+    slot: Option<Arc<ModelSlot>>,
 }
 
 impl SessionRuntime {
@@ -437,6 +443,7 @@ impl SpawnCtx {
             last_status: SessionStatus::Idle,
             last_tasks: Vec::new(),
             notifications: RunNotificationState::default(),
+            slot: None,
         }
     }
 }
@@ -882,20 +889,15 @@ impl<'t> EventLoop<'t> {
             }
         }
 
-        let slot_model = self.ctx.model_slot.load();
-        let spec = slot_model.model.spec();
+        let slot = self.ctx.model_slot.load_full();
         for rt in &mut self.sessions {
-            if rt.app.state.session.model != spec
-                || rt.app.state.model.context_window != slot_model.model.context_window
-                || rt.app.state.model.supports_fast_override
-                    != slot_model.model.supports_fast_override
-            {
-                rt.app.update_model(&slot_model.model);
+            if rt.slot.as_ref().is_none_or(|s| !Arc::ptr_eq(s, &slot)) {
+                rt.slot = Some(Arc::clone(&slot));
+                rt.app.update_model(&slot.model);
                 dirty = Dirty::YES;
             }
             rt.app.emit_model_change();
         }
-        drop(slot_model);
 
         // These only fire Lua autocmds. Anything a handler does comes back
         // as a `UiAction` on the next wake, which repaints then.
