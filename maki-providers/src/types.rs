@@ -110,6 +110,9 @@ impl ImageSource {
 
 pub const IMAGE_OMITTED_NOTE: &str =
     "[image omitted: the current model does not support image input]";
+/// Stands in for the text of a message that carries only images, both in model
+/// context and in the transcript. One const so the two can never drift apart.
+pub const IMAGE_PLACEHOLDER: &str = "[image]";
 /// See [`Message::empty_marker`].
 pub const EMPTY_RESPONSE_MARKER: &str = "(empty)";
 

@@ -137,7 +137,7 @@ impl AgentLoop {
                         if !queued.displayed {
                             let _ = event_tx.send(AgentEvent::QueueItemConsumed {
                                 text: queued.text,
-                                image_count: queued.image_count,
+                                images: queued.input.images.clone(),
                             });
                         }
                         queued.input

@@ -474,6 +474,7 @@ pub struct PluginFileConfig {
 pub struct UiFileConfig {
     pub splash_animation: Option<bool>,
     pub scrollbar: Option<bool>,
+    pub inline_images: Option<bool>,
     pub notifications: Option<NotificationMethod>,
     pub flash_duration_ms: Option<u64>,
     pub typewriter_ms_per_char: Option<u64>,
@@ -492,6 +493,7 @@ impl UiFileConfig {
             overlay,
             splash_animation,
             scrollbar,
+            inline_images,
             notifications,
             flash_duration_ms,
             typewriter_ms_per_char,
@@ -1013,6 +1015,12 @@ pub struct UiConfig {
     pub scrollbar: bool,
 
     #[config(
+        default = true,
+        desc = "Render inline images in terminals with graphics support, falling back to an [image] line when off"
+    )]
+    pub inline_images: bool,
+
+    #[config(
         default = NotificationMethod::Auto,
         ty = "string",
         default_doc = "auto",
@@ -1057,6 +1065,7 @@ impl UiConfig {
         Self {
             splash_animation: f.splash_animation.unwrap_or(true),
             scrollbar: f.scrollbar.unwrap_or(true),
+            inline_images: f.inline_images.unwrap_or(true),
             notifications: f.notifications.unwrap_or_default(),
             flash_duration_ms: f.flash_duration_ms.unwrap_or(DEFAULT_FLASH_DURATION_MS),
             typewriter_ms_per_char: f

@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use flume::{Receiver, Sender};
 use maki_config::ToolKey;
 use maki_providers::{
-    AgentError, ContentBlock, Message, RequestOptions, Role, StopReason, TokenUsage, add_cost,
+    AgentError, ContentBlock, ImageSource, Message, RequestOptions, Role, StopReason, TokenUsage,
+    add_cost,
 };
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -622,7 +623,7 @@ pub enum AgentEvent {
     },
     QueueItemConsumed {
         text: String,
-        image_count: usize,
+        images: Vec<ImageSource>,
     },
     QueueDrained,
     Done {

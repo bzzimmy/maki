@@ -1,11 +1,16 @@
 use crate::render_worker::RenderWorker;
+use crate::repaint::Dirty;
+use crate::terminal_image::InlineImage;
 use crate::theme;
 use crate::wrap;
+use maki_providers::ImageSource;
+use std::sync::Arc;
 
 use super::super::code_view::SectionFlags;
 use super::super::tool_display::{HighlightRequest, ToolLines};
 use ratatui::text::{Line, Span};
 use std::cell::Cell;
+use std::mem;
 use std::ops::Range;
 
 const INST_SUFFIX: &str = "__inst";
@@ -49,6 +54,7 @@ impl HighlightKey {
 #[derive(Default)]
 pub(super) struct Segment {
     lines: Vec<Line<'static>>,
+    pub images: Vec<InlineImage>,
     pub tool_id: Option<String>,
     /// Backlink to `self.messages`, set only by `with_lines`. A click on a
     /// collapsed thinking indicator has no tool_id to route by, so this is
@@ -113,6 +119,36 @@ impl Segment {
     /// and the copy path all read this one number, so none of them can
     /// disagree on how tall a segment is.
     pub fn height(&self, width: u16) -> u16 {
+        self.images
+            .iter()
+            .fold(self.text_height(width), |height, image| {
+                height.saturating_add(image.height())
+            })
+    }
+
+    pub fn set_images(&mut self, sources: impl Iterator<Item = ImageSource>) {
+        let mut previous = mem::take(&mut self.images).into_iter();
+        self.images = sources
+            .map(|source| {
+                previous
+                    .next()
+                    .filter(|image| Arc::ptr_eq(&image.source().data, &source.data))
+                    .unwrap_or_else(|| InlineImage::new(source))
+            })
+            .collect();
+    }
+
+    pub fn poll_images(&mut self) -> Dirty {
+        Dirty::any(self.images.iter_mut().map(InlineImage::poll))
+    }
+
+    pub fn release_images(&mut self) {
+        for image in &mut self.images {
+            image.release();
+        }
+    }
+
+    pub fn text_height(&self, width: u16) -> u16 {
         if let Some(c) = self.cached_height.get()
             && c.at_width == width
         {

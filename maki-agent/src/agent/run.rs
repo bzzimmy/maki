@@ -7,7 +7,8 @@ use tracing::{error, info, warn};
 
 use maki_providers::provider::Provider;
 use maki_providers::{
-    ContentBlock, Message, Model, RequestOptions, Role, StopReason, StreamResponse, TokenUsage,
+    ContentBlock, IMAGE_PLACEHOLDER, Message, Model, RequestOptions, Role, StopReason,
+    StreamResponse, TokenUsage,
 };
 
 use super::compaction;
@@ -687,7 +688,7 @@ impl<'h> Agent<'h> {
                 for input in inputs {
                     self.event_tx.send(AgentEvent::QueueItemConsumed {
                         text: input.message.clone(),
-                        image_count: input.images.len(),
+                        images: input.images.clone(),
                     })?;
                     self.push_input_context(input.preamble);
                     self.mode = input.mode;
@@ -696,7 +697,13 @@ impl<'h> Agent<'h> {
                         input.message
                     );
                     self.history.push(Message {
-                        display_text: Some(input.message),
+                        display_text: Some(
+                            if input.message.is_empty() && !input.images.is_empty() {
+                                IMAGE_PLACEHOLDER.into()
+                            } else {
+                                input.message
+                            },
+                        ),
                         ..Message::user_with_images(wrapped, input.images)
                     });
                 }

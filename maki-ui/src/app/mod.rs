@@ -1044,7 +1044,7 @@ impl App {
             let id = self.shell.reserve_id();
             let sigil = if prefix.visible { "!" } else { "!!" };
             let display = format!("{sigil} {}", prefix.command);
-            self.main_chat().show_user_message(display);
+            self.main_chat().show_user_message(display, Vec::new());
             return vec![Action::ShellCommand {
                 id,
                 command: prefix.command,
@@ -1235,9 +1235,9 @@ impl App {
         };
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
-        if let ChatEventResult::QueueItemConsumed { text, image_count } = result {
+        if let ChatEventResult::QueueItemConsumed { text, images } = result {
             if chat_idx == 0 {
-                self.on_queue_item_consumed(&text, image_count);
+                self.on_queue_item_consumed(text, images);
             }
             return vec![];
         }
@@ -1886,12 +1886,4 @@ fn sync_search_highlight(modal: &SearchModal, chat: &mut Chat) {
         chat.scroll_to_segment(i);
     }
     chat.set_highlight_segment(idx);
-}
-
-fn format_with_images(text: &str, image_count: usize) -> String {
-    match image_count {
-        0 => text.to_string(),
-        1 => format!("{text} [1 image]"),
-        n => format!("{text} [{n} images]"),
-    }
 }

@@ -17,17 +17,21 @@ use super::tool_display::{
     instructions_search_text, search_text_for, thinking_indicator, thinking_style,
     truncate_to_header, user_style,
 };
-use super::{DisplayMessage, DisplayRole, ToolRole, ToolStatus, code_view::SectionFlags};
+use super::{
+    DisplayMessage, DisplayRole, IMAGE_PLACEHOLDER, ToolRole, ToolStatus, code_view::SectionFlags,
+};
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::{DocPos, RowPos, Selection};
 use crate::splash::{ColorTransition, Splash};
+use crate::terminal_image;
 use crate::theme;
 use crate::update;
 use crate::wrap;
 use maki_config::{ClockFormat, ToolOutputLines, UiConfig};
+use ratatui_image::picker::Picker;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -36,8 +40,8 @@ use std::time::Instant;
 use super::scrollbar::{self, render_vertical_scrollbar};
 use super::streaming_content::StreamingContent;
 use maki_agent::{
-    BufferSnapshot, EventSender, InstructionBlock, NO_FILES_FOUND, SharedBuf, ToolDoneEvent,
-    ToolOutput, ToolStartEvent,
+    BufferSnapshot, EventSender, ImageSource, InstructionBlock, NO_FILES_FOUND, SharedBuf,
+    ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
 use maki_lua::{EventHandle, WARM_TOOL_CAP, WinView};
 use maki_storage::id::{MakiId, SessionRef};
@@ -51,6 +55,8 @@ use ratatui::text::{Line, Span};
 use tracing::warn;
 
 const REFLOW_MARGIN_VIEWPORTS: u32 = 1;
+/// How far outside the drawn range an image keeps its encoded protocol.
+const IMAGE_KEEP_MARGIN_SEGMENTS: usize = 8;
 
 #[derive(Clone, Copy)]
 pub struct PromptProgress {
@@ -73,6 +79,9 @@ pub struct MessagesPanel {
     /// the row walk and clicks address the tail between frames.
     tail: Vec<(TailPart, u16)>,
     hl_worker: RenderWorker,
+    image_picker: Option<Picker>,
+    inline_images: bool,
+    image_generation: u64,
     theme_generation: u64,
     highlight_segment: Option<usize>,
     idle_splash: Splash,
@@ -129,6 +138,9 @@ impl MessagesPanel {
             cache: SegmentCache::new(),
             tail: Vec::new(),
             hl_worker: RenderWorker::new(),
+            image_picker: terminal_image::picker(ui_config.inline_images),
+            inline_images: ui_config.inline_images,
+            image_generation: terminal_image::generation(),
             theme_generation: theme::generation(),
             highlight_segment: None,
             idle_splash: Splash::new(ui_config.splash_animation),
@@ -678,6 +690,9 @@ impl MessagesPanel {
         let Some(seg) = self.cache.get(pos.seg) else {
             return self.try_toggle_collapsed_thinking(pos);
         };
+        if !seg.images.is_empty() && pos.row >= seg.text_height(width) {
+            return false;
+        }
         let Some(tool_id) = seg.tool_id.as_deref() else {
             let msg_idx = seg.msg_index;
             return self.try_toggle_cached_thinking(msg_idx, width);
@@ -767,11 +782,12 @@ impl MessagesPanel {
         msg.tool_output.as_deref()?.owned_instructions()
     }
 
-    /// Drains the highlight worker and every live tool buffer. These used to
-    /// run inside [`Self::view`], which is why a running tool had to claim it
-    /// was animating: it was the only way to keep them fed.
+    /// Drains the highlight worker, every live tool buffer and the finished
+    /// image decodes. These used to run inside [`Self::view`], which is why a
+    /// running tool had to claim it was animating: it was the only way to keep
+    /// them fed.
     pub fn tick(&mut self) -> Dirty {
-        let mut dirty = self.drain_highlights() | self.poll_live_bufs();
+        let mut dirty = self.drain_highlights() | self.poll_live_bufs() | self.refresh_images();
         if self.show_idle_splash() {
             dirty |= self.idle_splash.poll_update(update::latest_version());
         }
@@ -805,7 +821,47 @@ impl MessagesPanel {
             && self.streaming_text.is_empty()
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
+    /// A resume can come back to a terminal whose font size changed while we
+    /// were suspended, and the picker caches those cell metrics, so rebuild it
+    /// and drop every protocol encoded against the old ones.
+    fn refresh_images(&mut self) -> Dirty {
+        let generation = terminal_image::generation();
+        if generation == self.image_generation {
+            return Dirty::any(
+                self.cache
+                    .segments_mut()
+                    .iter_mut()
+                    .map(Segment::poll_images),
+            );
+        }
+        self.image_generation = generation;
+        self.image_picker = terminal_image::picker(self.inline_images);
+        for seg in self.cache.segments_mut() {
+            seg.release_images();
+        }
+        Dirty::YES
+    }
+
+    /// Rebuilding an encoded protocol costs a decode, a resize and, on kitty, a
+    /// retransmit of megabytes. Releasing exactly at the viewport edge would
+    /// make a one row scroll thrash, so segments just outside keep theirs.
+    fn release_images_outside(&mut self, last_drawn: usize) {
+        let keep = self.scroll.seg.saturating_sub(IMAGE_KEEP_MARGIN_SEGMENTS)
+            ..=last_drawn.saturating_add(IMAGE_KEEP_MARGIN_SEGMENTS);
+        for (i, seg) in self.cache.segments_mut().iter_mut().enumerate() {
+            if !keep.contains(&i) {
+                seg.release_images();
+            }
+        }
+    }
+
+    pub fn view(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        has_selection: bool,
+        images_visible: bool,
+    ) {
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);
         let theme_gen = theme::generation();
@@ -865,21 +921,27 @@ impl MessagesPanel {
         let viewport = Rect::new(area.x, area.y, width, area.height);
         let mut cursor = RenderCursor::new(self.scroll.row, viewport);
 
+        let mut last_drawn = self.scroll.seg;
         for (i, seg) in self
             .cache
-            .segments()
-            .iter()
+            .segments_mut()
+            .iter_mut()
             .enumerate()
             .skip(self.scroll.seg)
         {
             if cursor.past_bottom() {
                 break;
             }
-            let h = seg.height(width);
+            let h = seg.text_height(width);
             let highlight = self.highlight_segment == Some(i);
             let style = seg.tool_id.as_ref().map(|_| theme::current().tool_bg);
             cursor.render(seg.lines(), h, style, highlight, frame);
+            for image in &mut seg.images {
+                cursor.render_image(image, self.image_picker.as_ref(), images_visible, frame);
+            }
+            last_drawn = i;
         }
+        self.release_images_outside(last_drawn);
 
         let spacer_lines: [Line<'static>; 1] = [Line::default()];
         for &(part, h) in self
@@ -1408,6 +1470,7 @@ impl MessagesPanel {
 
         let seg = self.cache.get_mut(seg_idx).unwrap();
         seg.update_with_reuse(tl, &self.hl_worker);
+        seg.set_images(message_images(msg));
 
         if let Some(blocks) = instructions {
             self.upsert_instruction_segment(tool_id, &blocks);
@@ -1429,6 +1492,7 @@ impl MessagesPanel {
                 self.cache.push_spacer_if_needed();
                 let mut seg = Segment::with_tool(id.clone());
                 seg.apply_highlight(tl, &self.hl_worker);
+                seg.set_images(message_images(msg));
                 self.cache.push(seg);
                 self.cache.reserve_instructions(&id);
 
@@ -1449,7 +1513,9 @@ impl MessagesPanel {
                 }
                 let lines = build_message_lines(msg, self.viewport_width);
                 self.cache.push_spacer_if_needed();
-                self.cache.push(Segment::with_lines(lines, Some(i)));
+                let mut seg = Segment::with_lines(lines, Some(i));
+                seg.set_images(message_images(msg));
+                self.cache.push(seg);
             }
         }
         self.cache.mark_built(self.messages.len());
@@ -1568,6 +1634,16 @@ impl MessagesPanel {
     }
 }
 
+fn message_images(msg: &DisplayMessage) -> impl Iterator<Item = ImageSource> + '_ {
+    msg.images
+        .iter()
+        .chain(match msg.tool_output.as_deref() {
+            Some(ToolOutput::Image { source, .. }) => Some(source),
+            _ => None,
+        })
+        .cloned()
+}
+
 fn message_style(role: &DisplayRole) -> RoleStyle {
     match role {
         DisplayRole::User => user_style(),
@@ -1611,9 +1687,14 @@ fn logical_line_count(text: &str) -> usize {
 fn build_message_lines(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
     let style = message_style(&msg.role);
     let prefix = message_prefix(msg, &style);
+    let text = if !msg.images.is_empty() && msg.text == IMAGE_PLACEHOLDER {
+        ""
+    } else {
+        &msg.text
+    };
     let mut lines = if style.use_markdown {
         text_to_lines(
-            &msg.text,
+            text,
             prefix,
             style.text_style,
             style.prefix_style,
@@ -1621,7 +1702,7 @@ fn build_message_lines(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
             style.max_line_bytes,
         )
     } else {
-        plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
+        plain_lines(text, prefix, style.text_style, style.prefix_style)
     };
     if let Some(pp) = &msg.plan_path {
         if !msg.text.is_empty() {

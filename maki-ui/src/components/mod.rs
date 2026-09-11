@@ -35,8 +35,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
 use maki_agent::{BufferSnapshot, ToolInput, ToolOutput};
 use maki_lua::{PackCommand, PackPlan};
-use maki_providers::{Message, ModelTier};
+use maki_providers::{ImageSource, Message, ModelTier};
 use ratatui::text::{Line, Span};
+
+pub(crate) use maki_providers::IMAGE_PLACEHOLDER;
 
 pub(crate) const CHEVRON: &str = "❯ ";
 
@@ -286,6 +288,7 @@ pub enum ToolStatus {
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
+    pub images: Vec<ImageSource>,
     pub tool_input: Option<Arc<ToolInput>>,
     pub tool_raw_input: Option<Arc<serde_json::Value>>,
     pub tool_output: Option<Arc<ToolOutput>>,
@@ -306,6 +309,7 @@ impl DisplayMessage {
         Self {
             role,
             text,
+            images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
             tool_output: None,
@@ -322,10 +326,23 @@ impl DisplayMessage {
         }
     }
 
+    pub fn with_images(role: DisplayRole, text: String, images: Vec<ImageSource>) -> Self {
+        let text = if text.trim().is_empty() && !images.is_empty() {
+            IMAGE_PLACEHOLDER.into()
+        } else {
+            text
+        };
+        Self {
+            images,
+            ..Self::new(role, text)
+        }
+    }
+
     pub fn plan(text: String, plan_path: String) -> Self {
         Self {
             role: DisplayRole::Assistant,
             text,
+            images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
             tool_output: None,

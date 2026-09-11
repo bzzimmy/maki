@@ -149,7 +149,13 @@ impl App {
     fn render_messages(&mut self, frame: &mut Frame, layout: &ViewLayout, render_chat: usize) {
         let accent = self.effective_mode_color();
         self.chats[render_chat].set_accent(accent);
-        self.chats[render_chat].view(frame, layout.msg_area, self.selection_state.is_some());
+        let images_visible = !self.any_overlay_open();
+        self.chats[render_chat].view(
+            frame,
+            layout.msg_area,
+            self.selection_state.is_some(),
+            images_visible,
+        );
     }
 
     fn render_bottom_panel(&mut self, frame: &mut Frame, layout: &ViewLayout) -> Option<Position> {

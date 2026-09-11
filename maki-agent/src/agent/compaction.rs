@@ -2,7 +2,8 @@ use std::env;
 
 use maki_config::{AgentConfig, CompactionBuffer};
 use maki_providers::{
-    ContentBlock, Message, Model, RequestOptions, Role, StreamResponse, TokenUsage,
+    ContentBlock, IMAGE_PLACEHOLDER, Message, Model, RequestOptions, Role, StreamResponse,
+    TokenUsage,
 };
 use maki_storage::id::SessionRef;
 use tracing::info;
@@ -14,7 +15,6 @@ use crate::prompt::COMPACTION_USER;
 use crate::{AgentError, AgentEvent, DoneReason, EventSender, TurnCompleteEvent};
 
 const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed. If the summary contains a todo list, restore it with todo_write and keep it updated. If you learned important project context during this session, consider saving it to memory before it's lost.";
-const IMAGE_PLACEHOLDER: &str = "[image]";
 const TOOL_RESULT_PLACEHOLDER: &str = "[tool result]";
 /// How much of the newest tool output survives a compaction verbatim. This
 /// used to be a count, which kept three huge results and threw away thirty

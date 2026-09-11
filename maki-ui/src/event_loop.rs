@@ -1494,7 +1494,6 @@ impl<'t> EventLoop<'t> {
                 let run_id = rt.app.run_id;
                 rt.handles.queue.push(QueueItem::Message(QueuedInput {
                     text: input.message.clone(),
-                    image_count: input.images.len(),
                     input,
                     run_id,
                     displayed: true,

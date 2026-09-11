@@ -883,6 +883,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         }
     }
 
@@ -1021,6 +1022,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         }
     }
 
@@ -1116,6 +1118,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         }
     }
 
@@ -1156,6 +1159,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         }
     }
 
@@ -1463,6 +1467,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         }
     }
 
@@ -1564,6 +1569,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         }
     }
 
@@ -1674,6 +1680,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         };
         assert!(
             search_text_for(&msg).contains("llm_output_here"),
@@ -1707,6 +1714,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         };
         assert!(
             search_text_for(&msg).contains("body_fallback"),
@@ -1737,6 +1745,7 @@ mod tests {
             render_header: None,
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
+            images: Vec::new(),
         };
         assert!(
             search_text_for(&msg).contains(LIVE_TEXT),

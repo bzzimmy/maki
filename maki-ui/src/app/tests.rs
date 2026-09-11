@@ -560,7 +560,7 @@ fn queue_item_consumed_pushes_deferred_user_message() {
     app.update(agent_msg_with_run_id(
         AgentEvent::QueueItemConsumed {
             text: "queued".into(),
-            image_count: 0,
+            images: Vec::new(),
         },
         app.run_id,
     ));
@@ -584,7 +584,7 @@ fn queue_item_consumed_marks_agent_streaming() {
     app.update(agent_msg_with_run_id(
         AgentEvent::QueueItemConsumed {
             text: "restored".into(),
-            image_count: 0,
+            images: Vec::new(),
         },
         app.run_id,
     ));
@@ -1595,7 +1595,7 @@ fn page_keys_scroll_the_transcript_by_one_page() {
     let backend = ratatui::backend::TestBackend::new(area.width, area.bottom());
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| app.active_chat().view(frame, area, false))
+        .draw(|frame| app.active_chat().view(frame, area, false, true))
         .unwrap();
     let down = app.active_chat().win_view();
     assert_eq!(
@@ -1695,7 +1695,7 @@ fn app_with_transcript(zone: Rect) -> App {
     let backend = ratatui::backend::TestBackend::new(zone.width, zone.bottom());
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| app.active_chat().view(frame, zone, false))
+        .draw(|frame| app.active_chat().view(frame, zone, false, true))
         .unwrap();
     app
 }
