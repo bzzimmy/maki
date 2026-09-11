@@ -478,20 +478,17 @@ pub fn warm_catalog() {
 }
 
 /// Force-refetches the models.dev catalog; failures keep the stale catalog and cache.
+/// Blocks, so only call it from startup paths, never from inside the executor.
 pub fn refresh_catalog() -> Result<(), AgentError> {
-    let state_dir = match StateDir::resolve() {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(error = %e, "failed to resolve state dir");
-            StateDir::from_path("".into())
-        }
-    };
-    let client = catalog_client();
-    let index = smol::block_on(fetch_remote_catalog_async(&client))?;
-    smol::block_on(save_cached_catalog_async(&index));
-    let data = CatalogData::from_index(index, &state_dir);
-    let catalog = SHARED_CATALOG.get_or_init(|| Mutex::new(CatalogData::empty(state_dir)));
-    *catalog.lock().unwrap() = data;
+    let state_dir = StateDir::resolve()
+        .map_err(|e| config_error(format!("failed to resolve state dir: {e}")))?;
+    let data = fetch_catalog_blocking(&state_dir)?;
+    match SHARED_CATALOG.get() {
+        Some(catalog) => *catalog.lock().unwrap() = data,
+        // Set instead of `get_or_init` so a cold catalog takes the fetch we just
+        // did rather than kicking off `init_catalog_blocking` and fetching twice.
+        None => drop(SHARED_CATALOG.set(Mutex::new(data))),
+    }
     Ok(())
 }
 
@@ -645,6 +642,11 @@ fn catalog_client() -> HttpClient {
         .expect("failed to build catalog HTTP client")
 }
 
+fn fetch_catalog_blocking(state_dir: &StateDir) -> Result<CatalogData, AgentError> {
+    let index = smol::block_on(fetch_remote_catalog_async(&catalog_client()))?;
+    smol::block_on(save_cached_catalog_async(&index));
+    Ok(CatalogData::from_index(index, state_dir))
+}
 // Try cache first, then fetch from remote.
 fn init_catalog_blocking() -> CatalogData {
     let state_dir = match StateDir::resolve() {
@@ -659,13 +661,8 @@ fn init_catalog_blocking() -> CatalogData {
         return CatalogData::from_index(index, &state_dir);
     }
 
-    let client = catalog_client();
-
-    match smol::block_on(fetch_remote_catalog_async(&client)) {
-        Ok(index) => {
-            smol::block_on(save_cached_catalog_async(&index));
-            CatalogData::from_index(index, &state_dir)
-        }
+    match fetch_catalog_blocking(&state_dir) {
+        Ok(data) => data,
         Err(e) => {
             warn!(error = %e, "catalog fetch failed, using empty catalog");
             CatalogData::empty(state_dir)

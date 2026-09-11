@@ -10,6 +10,7 @@ use maki_config::ToolOutputLines;
 use maki_lua::{PluginHost, RestoreReason};
 use maki_storage::id::SessionRef;
 use serde_json::{Value, json};
+use test_case::test_case;
 
 const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
@@ -378,17 +379,18 @@ fn index_dir_renders_identically_live_and_restored() {
 }
 
 /// Nothing else runs the real plugin's restore, which now reads the chat and
-/// the reason off the ctx.
-#[test]
-fn todo_write_restore_renders_the_list() {
+/// the reason off the ctx. A failed call is kept out of the panel but still
+/// shows its list in the transcript, so both answers render the same.
+#[test_case(false ; "applied")]
+#[test_case(true ; "failed")]
+fn todo_write_restore_renders_the_list(is_error: bool) {
     let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
     host.load_source(TODO_TOOL, TODO_SRC).unwrap();
     let input = json!({ "todos": [{ "content": TODO_ITEM, "status": "in_progress" }] });
+    let mut item = in_subagent_load(restore_item(TODO_TOOL, input, "", None, Vec::new()));
+    item.is_error = is_error;
 
-    let r = run_restore(
-        &host,
-        in_subagent_load(restore_item(TODO_TOOL, input, "", None, Vec::new())),
-    );
+    let r = run_restore(&host, item);
 
     assert!(r.body.contains(TODO_ITEM), "list missing: {}", r.body);
 }

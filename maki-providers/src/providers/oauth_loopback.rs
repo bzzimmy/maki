@@ -12,6 +12,10 @@ use crate::AgentError;
 
 const ACCEPT_POLL: Duration = Duration::from_millis(100);
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// `REQUEST_READ_TIMEOUT` is per read, so a peer trickling a byte at a time
+/// resets it forever and holds up the single-threaded accept loop. This is the
+/// budget for the whole head.
+const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_CHUNK: usize = 1024;
 const MAX_REQUEST_SIZE: usize = 8192;
 const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
@@ -31,6 +35,7 @@ const EMPTY_PASTE_MSG: &str = "empty OAuth callback";
 const INCOMPLETE_PASTE_MSG: &str =
     "ignored pasted OAuth input because it was not a complete redirect URL";
 const INVALID_METHOD_MSG: &str = "invalid login method";
+const SLOW_REQUEST_MSG: &str = "OAuth callback request head arrived too slowly";
 
 #[derive(Clone, Copy)]
 enum Status {
@@ -146,7 +151,7 @@ impl Server {
     fn serve(&self, mut stream: TcpStream, expected_state: &str) -> Option<CallbackResult> {
         stream.set_nonblocking(false).ok();
         stream.set_read_timeout(Some(REQUEST_READ_TIMEOUT)).ok();
-        let head = read_request_head(&mut stream).ok()?;
+        let head = read_request_head(&mut stream, Instant::now() + REQUEST_HEAD_TIMEOUT).ok()?;
         let head = String::from_utf8_lossy(&head);
         let target = head.split_whitespace().nth(1)?;
 
@@ -196,10 +201,13 @@ fn bind_localhost(port: u16) -> io::Result<(Vec<TcpListener>, u16)> {
     Ok((listeners, bound))
 }
 
-fn read_request_head(stream: &mut impl Read) -> io::Result<Vec<u8>> {
+fn read_request_head(stream: &mut impl Read, deadline: Instant) -> io::Result<Vec<u8>> {
     let mut request = Vec::with_capacity(READ_CHUNK);
     let mut buffer = [0u8; READ_CHUNK];
     while request.len() < MAX_REQUEST_SIZE {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, SLOW_REQUEST_MSG));
+        }
         let size = stream.read(&mut buffer)?;
         if size == 0 {
             break;
@@ -373,16 +381,34 @@ pub(crate) fn prompt(message: &str) -> Result<String, AgentError> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read as _, Write as _};
+    use std::io::{ErrorKind, Read, Write as _};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener, TcpStream};
     use std::thread;
 
     use test_case::test_case;
 
     use super::{
-        CallbackResult, Duration, Loopback, RAW_CODE_MSG, STATE_MISMATCH, bind_localhost,
-        parse_callback_input, parse_callback_query, parse_callback_target, pkce_pair, request_path,
+        CallbackResult, Duration, Instant, Loopback, RAW_CODE_MSG, SLOW_REQUEST_MSG,
+        STATE_MISMATCH, bind_localhost, parse_callback_input, parse_callback_query,
+        parse_callback_target, pkce_pair, read_request_head, request_path,
     };
+
+    /// A peer that keeps the connection alive but never ends the head.
+    struct Trickle;
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            buf[0] = b'x';
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn a_head_that_outlives_its_deadline_is_dropped() {
+        let error = read_request_head(&mut Trickle, Instant::now()).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::TimedOut);
+        assert_eq!(error.to_string(), SLOW_REQUEST_MSG);
+    }
 
     // RFC 7636 Appendix B: https://www.rfc-editor.org/rfc/rfc7636.html#appendix-B
     const RFC7636_CHALLENGE_LEN: usize = 43;

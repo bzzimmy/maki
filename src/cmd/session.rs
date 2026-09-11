@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::env;
 use std::fmt::Write as _;
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write as _};
 
 use color_eyre::Result;
 use color_eyre::eyre::{Context, bail, eyre};
@@ -32,6 +32,8 @@ const MIN_PROJECT_WIDTH: usize = 12;
 const PROJECT_COLUMN: usize = 2;
 const NO_SESSIONS: &str = "No sessions found";
 const NO_SESSIONS_HERE: &str = "No sessions found in this directory (try --global)";
+const NEEDS_TTY: &str = "refusing to delete without a terminal to confirm on, pass --force";
+const CANCELLED: &str = "Cancelled";
 
 pub fn list(global: bool, storage: &StateDir) -> Result<()> {
     let summaries = if global {
@@ -55,10 +57,14 @@ pub fn list(global: bool, storage: &StateDir) -> Result<()> {
     Ok(())
 }
 
-pub fn delete(session_id: &str, storage: &StateDir) -> Result<()> {
+pub fn delete(session_id: &str, force: bool, storage: &StateDir) -> Result<()> {
     let id: MakiId = session_id
         .parse()
         .map_err(|e| eyre!("invalid session id {session_id:?}: {e}"))?;
+    if !force && !confirm(id)? {
+        println!("{CANCELLED}");
+        return Ok(());
+    }
     match AppSession::delete(id, storage) {
         Ok(()) => println!("Deleted session {id}"),
         Err(SessionError::Storage(StorageError::NotFound(_))) => {
@@ -67,6 +73,21 @@ pub fn delete(session_id: &str, storage: &StateDir) -> Result<()> {
         Err(e) => return Err(e).context("delete session"),
     }
     Ok(())
+}
+
+/// A maki that already has the session open cannot notice the delete: it holds
+/// an open handle, keeps appending to the unlinked file, and loses every turn
+/// after that. The `/sessions` picker asks twice for the same reason.
+fn confirm(id: MakiId) -> Result<bool> {
+    let stdin = io::stdin();
+    if !stdin.is_terminal() {
+        bail!(NEEDS_TTY);
+    }
+    print!("Delete session {id}? [y/N] ");
+    io::stdout().flush().context("prompt")?;
+    let mut answer = String::new();
+    stdin.read_line(&mut answer).context("read answer")?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
 /// Table budget when writing to a terminal. `terminal_width` answers from the

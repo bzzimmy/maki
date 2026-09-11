@@ -552,10 +552,11 @@ pub fn models(no_plugins: bool, no_jit: bool, refresh: bool) -> Result<()> {
     )?;
     super::report_warnings(warnings);
 
+    let mut refresh_failure = None;
     if refresh {
         match maki_providers::refresh_catalog() {
             Ok(()) => eprintln!("models.dev catalog has been refreshed"),
-            Err(e) => eprintln!("warning: catalog refresh failed, keeping existing cache: {e}"),
+            Err(e) => refresh_failure = Some(e),
         }
     }
 
@@ -571,6 +572,10 @@ pub fn models(no_plugins: bool, no_jit: bool, refresh: bool) -> Result<()> {
         },
         None,
     ));
+
+    if let Some(e) = refresh_failure {
+        bail!("catalog refresh failed, keeping existing cache: {e}");
+    }
     Ok(())
 }
 

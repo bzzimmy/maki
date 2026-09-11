@@ -273,6 +273,9 @@ pub enum SessionAction {
         /// Session ID (see `maki session list`)
         #[arg(value_name = "SESSION_ID")]
         session_id: String,
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        force: bool,
     },
 }
 

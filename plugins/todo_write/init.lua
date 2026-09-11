@@ -153,11 +153,14 @@ maki.api.register_tool({
 
   -- A session load replays the transcript in order, so the last call wins
   -- and the panel picks up where the session left off. A rerender (click,
-  -- theme change) replays one call that may be long superseded.
-  restore = function(input, _output, _is_error, ctx)
+  -- theme change) replays one call that may be long superseded. A failed
+  -- call never reached the handler, so it must not reach the panel either:
+  -- denied, cancelled, and the entries a batch drops past its size cap all
+  -- arrive here with the input intact.
+  restore = function(input, _output, is_error, ctx)
     local items = input.todos or {}
     local sid = ctx:session_id() or ""
-    if ctx:restore_reason() == "load" and not live[sid] then
+    if not is_error and ctx:restore_reason() == "load" and not live[sid] then
       store(sid, ctx:task_id(), items)
     end
     if #items == 0 then

@@ -98,17 +98,17 @@ maki models
 maki models --refresh    # refetch the models.dev catalog
 ```
 
-One spec per line, warnings on stderr. Built-in and script providers are listed live, catalog-backed providers from the models.dev cache, which expires after 24 hours and supplies model pricing and context windows. `--refresh` refetches it.
+One spec per line, warnings on stderr. Built-in and script providers are listed live, catalog-backed providers from the models.dev cache, which expires after 24 hours and supplies model pricing and context windows. `--refresh` refetches it. When the refetch fails, the cached catalog stays in place, the list still prints, and the command exits non-zero.
 
 ### `maki session`
 
 ```bash
 maki session list            # sessions for the current directory
 maki session list --global   # sessions from all projects
-maki session delete <id>     # no confirmation
+maki session delete <id>     # asks first, -f skips
 ```
 
-Prints stored sessions as a table (id, title, project directory with `$HOME` collapsed to `~`, last update as a relative age), newest first. A listed id works with `maki --session <id>` to resume it. `delete` removes the session log along with its archives and index entries. Inside the TUI the same data lives behind `/sessions` (`Ctrl+P`), where `Ctrl+D` deletes.
+Prints stored sessions as a table (id, title, project directory with `$HOME` collapsed to `~`, last update as a relative age), newest first. A listed id works with `maki --session <id>` to resume it. `delete` removes the session log along with its archives and index entries, and asks for confirmation first unless you pass `-f` / `--force`; without a terminal to ask on it refuses outright. A maki that already has the session open will not notice the delete and will lose the rest of that conversation, so close it first. Inside the TUI the same data lives behind `/sessions` (`Ctrl+P`), where `Ctrl+D` deletes.
 
 ### `maki mcp`
 
