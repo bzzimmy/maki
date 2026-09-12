@@ -6,7 +6,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use flume::{Receiver, Sender};
 use maki_config::ToolKey;
-use maki_providers::{AgentError, ContentBlock, Message, Role, StopReason, TokenUsage, add_cost};
+use maki_providers::{
+    AgentError, ContentBlock, ImageSource, Message, RequestOptions, Role, StopReason, TokenUsage,
+    add_cost,
+};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use strum::Display;
@@ -620,7 +623,7 @@ pub enum AgentEvent {
     },
     QueueItemConsumed {
         text: String,
-        image_count: usize,
+        images: Vec<ImageSource>,
     },
     QueueDrained,
     Done {
@@ -1000,6 +1003,11 @@ pub struct SubagentInfo {
     pub prompt: Option<String>,
     #[serde(rename = "parent_model", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// What the subagent actually runs with, already reconciled against its
+    /// model. `None` means unknown (a restore predating it), which reads as
+    /// the parent's settings.
+    #[serde(skip)]
+    pub opts: Option<RequestOptions>,
     #[serde(skip)]
     pub answer_tx: Option<flume::Sender<String>>,
 }

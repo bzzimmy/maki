@@ -16,8 +16,8 @@ use maki_config::{
     ToolOutputLines,
 };
 use maki_lua::{
-    MAX_INFLIGHT_TOOLS, PERMISSION_NAME_WARNING, PluginError, PluginHost, SKIPPED_PLUGIN_WARNING,
-    SessionEndReason, WARM_TOOL_CAP,
+    InitFiles, MAX_INFLIGHT_TOOLS, PERMISSION_NAME_WARNING, PluginError, PluginHost,
+    SKIPPED_PLUGIN_WARNING, SessionEndReason, WARM_TOOL_CAP,
 };
 use maki_providers::Model;
 use maki_storage::id::SessionRef;
@@ -94,6 +94,30 @@ fn builtins_host_with(config: &PluginsConfig) -> (Arc<ToolRegistry>, PluginHost)
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
     host.load_builtins(config).unwrap();
     (reg, host)
+}
+
+/// A tool can be registered and still stay invisible to the model, so this
+/// goes through the definitions a real request is built from.
+fn tool_description(reg: &ToolRegistry, agent: &maki_config::AgentConfig, name: &str) -> String {
+    let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
+    let filter = ToolFilter::from_config(agent, &model, &[]);
+    let ctx = DescriptionContext {
+        filter: &filter,
+        audience: ToolAudience::MAIN,
+        workflow: false,
+        mcp: false,
+    };
+    let defs = reg.definitions(&Vars::new(), &ctx, false);
+    let def = defs
+        .as_array()
+        .expect("definitions returns an array")
+        .iter()
+        .find(|def| def["name"] == name)
+        .unwrap_or_else(|| panic!("{name} must reach the model"));
+    def["description"]
+        .as_str()
+        .expect("description is a string")
+        .to_owned()
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: serde_json::Value) -> Result<String, String> {
@@ -1244,7 +1268,7 @@ fn incompatible_plugin_warns_instead_of_aborting_startup() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let mut warnings = Vec::new();
-    host.load_init_files_or_skip(false, tmp.path(), &mut warnings)
+    host.load_init_files(InitFiles::GlobalAndProject, tmp.path(), &mut warnings)
         .expect("an incompatible plugin must not abort startup");
 
     assert!(!reg.has("echo_"));
@@ -1280,7 +1304,7 @@ fn init_file_taking_a_permission_keyed_tool_name_warns(tool: &str, expected: usi
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let mut warnings = Vec::new();
-    host.load_init_files_or_skip(false, tmp.path(), &mut warnings)
+    host.load_init_files(InitFiles::GlobalAndProject, tmp.path(), &mut warnings)
         .expect("init.lua must load");
 
     assert!(reg.has(tool));
@@ -3617,6 +3641,38 @@ fn builtin_opts_flow_from_setup_plugins() {
     assert!(!limit.desc.is_empty(), "declared desc surfaces");
 }
 
+fn websearch_config(provider: &str) -> PluginsConfig {
+    PluginsConfig {
+        enabled: true,
+        names: vec!["websearch".to_owned()],
+        packages: Vec::new(),
+        opts: HashMap::from([(
+            "websearch".to_owned(),
+            json_obj(serde_json::json!({ "provider": provider })),
+        )]),
+    }
+}
+
+/// The backend the plugin talks to is invisible from Rust, so we read it off
+/// the one thing it leaks: the description the model gets.
+#[test_case::test_case("exa", "Exa AI" ; "default_backend")]
+#[test_case::test_case("youcom", "You.com" ; "opt_in_backend")]
+fn websearch_provider_option_selects_the_backend(provider: &str, expected: &str) {
+    let (reg, _host) = builtins_host_with(&websearch_config(provider));
+    let description = tool_description(&reg, &maki_config::AgentConfig::default(), "websearch");
+    assert!(description.contains(expected), "got: {description}");
+}
+
+#[test]
+fn websearch_unknown_provider_fails_the_load() {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let err = host
+        .load_builtins(&websearch_config("altavista"))
+        .expect_err("unknown provider should fail");
+    assert!(err.to_string().contains("unknown provider"), "got: {err}");
+}
+
 #[test_case::test_case(
     serde_json::json!({}),
     &["edit", "multiedit", "edit_lines"], &["insert_lines"]
@@ -3792,22 +3848,8 @@ fn disabled_builtin_hands_its_tool_name_to_a_user_plugin() {
     host.load_source(REPLACEMENT_PLUGIN, &shadow_src())
         .expect("a disabled builtin leaves its tool name free");
 
-    let model = Model::from_spec("anthropic/claude-opus-4-8").unwrap();
-    let filter = ToolFilter::from_config(&config.agent, &model, &[]);
-    let ctx = DescriptionContext {
-        filter: &filter,
-        audience: ToolAudience::MAIN,
-        workflow: false,
-        mcp: false,
-    };
-    let defs = reg.definitions(&Vars::new(), &ctx, false);
-    let shadowed = defs
-        .as_array()
-        .expect("definitions returns an array")
-        .iter()
-        .find(|def| def["name"] == SHADOWED_TOOL)
-        .expect("the replacement must reach the model, not just `maki prompt --tools`");
-    assert_eq!(shadowed["description"], REPLACEMENT_DESC);
+    let shadowed = tool_description(&reg, &config.agent, SHADOWED_TOOL);
+    assert_eq!(shadowed, REPLACEMENT_DESC);
 }
 
 #[test]

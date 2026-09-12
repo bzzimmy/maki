@@ -16,7 +16,7 @@ use maki_agent::tools::{MAIN_TASK_ID, ToolInvocation, ToolRegistry, WRITE_TOOL_N
 use maki_agent::{AgentEvent, BufferSnapshot, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use maki_config::{ToolKey, ToolOutputLines, UiConfig};
 use maki_lua::WinView;
-use maki_providers::{ContentBlock, Message, Role};
+use maki_providers::{ContentBlock, ImageSource, Message, RequestOptions, Role};
 use maki_storage::id::MakiId;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -36,7 +36,7 @@ pub enum ChatEventResult {
     Done,
     QueueItemConsumed {
         text: String,
-        image_count: usize,
+        images: Vec<ImageSource>,
     },
     Error(String),
     PermissionRequest {
@@ -52,6 +52,9 @@ pub struct Chat {
     pub cost: Option<f64>,
     pub context_size: u32,
     pub model_id: Option<String>,
+    /// A subagent's own settings; `None` on the main chat, which reads the
+    /// session's.
+    pub opts: Option<RequestOptions>,
     pending_turn_usage: Option<String>,
     messages_panel: MessagesPanel,
     /// The ending and the index of the bubble announcing it, so a later, better
@@ -77,6 +80,7 @@ impl Chat {
             cost: None,
             context_size: 0,
             model_id: None,
+            opts: None,
             pending_turn_usage: None,
             messages_panel,
             finish: None,
@@ -138,7 +142,18 @@ impl Chat {
                         .push(DisplayMessage::plan(content, pp.display().to_string()));
                 }
             }
-            AgentEvent::TurnComplete(_) => {}
+            AgentEvent::TurnComplete(turn) => {
+                for block in turn.message.content {
+                    if let ContentBlock::Image { source } = block {
+                        self.messages_panel.flush();
+                        self.messages_panel.push(DisplayMessage::with_images(
+                            DisplayRole::Assistant,
+                            String::new(),
+                            vec![source],
+                        ));
+                    }
+                }
+            }
             AgentEvent::ToolResultsSubmitted { .. } => {
                 if let Some(usage) = self.pending_turn_usage.take() {
                     self.messages_panel.set_turn_usage_on_last_tool(usage);
@@ -154,8 +169,8 @@ impl Chat {
             AgentEvent::CompactionDone { .. } => {
                 self.messages_panel.flush();
             }
-            AgentEvent::QueueItemConsumed { text, image_count } => {
-                return ChatEventResult::QueueItemConsumed { text, image_count };
+            AgentEvent::QueueItemConsumed { text, images } => {
+                return ChatEventResult::QueueItemConsumed { text, images };
             }
             AgentEvent::QueueDrained => {}
             AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
@@ -273,8 +288,15 @@ impl Chat {
         self.messages_panel.cadence()
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
-        self.messages_panel.view(frame, area, has_selection);
+    pub fn view(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        has_selection: bool,
+        images_visible: bool,
+    ) {
+        self.messages_panel
+            .view(frame, area, has_selection, images_visible);
     }
 
     pub fn scroll_pos(&self) -> ScrollPos {
@@ -392,9 +414,13 @@ impl Chat {
 
     /// Flush, push, and re-pin scroll in one shot to avoid
     /// the one-frame hop where the bubble briefly lands in the wrong row.
-    pub fn show_user_message(&mut self, text: impl Into<String>) {
+    pub fn show_user_message(&mut self, text: impl Into<String>, images: Vec<ImageSource>) {
         self.flush();
-        self.push_user_message(text);
+        self.messages_panel.push(DisplayMessage::with_images(
+            DisplayRole::User,
+            text.into(),
+            images,
+        ));
         self.enable_auto_scroll();
     }
 
@@ -470,8 +496,19 @@ pub fn history_to_display(
         }
         match msg.role {
             Role::User => {
-                if let Some(text) = msg.user_text() {
-                    display.push(DisplayMessage::new(DisplayRole::User, text.to_owned()));
+                // An empty `display_text` marks a message the transcript never
+                // shows, so its attachments must not sneak in either.
+                if msg.display_text.as_deref() == Some("") {
+                    continue;
+                }
+                let images = user_images(msg);
+                let text = msg.user_text();
+                if text.is_some() || !images.is_empty() {
+                    display.push(DisplayMessage::with_images(
+                        DisplayRole::User,
+                        text.unwrap_or_default().to_owned(),
+                        images,
+                    ));
                 }
             }
             Role::Assistant => {
@@ -479,6 +516,13 @@ pub fn history_to_display(
                     match block {
                         ContentBlock::Text { text } if !text.is_empty() => {
                             display.push(DisplayMessage::new(DisplayRole::Assistant, text.clone()));
+                        }
+                        ContentBlock::Image { source } => {
+                            display.push(DisplayMessage::with_images(
+                                DisplayRole::Assistant,
+                                String::new(),
+                                vec![source.clone()],
+                            ));
                         }
                         ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
                             display
@@ -551,6 +595,7 @@ pub fn history_to_display(
                                     name: static_name.into(),
                                 })),
                                 text,
+                                images: Vec::new(),
                                 tool_input: None,
                                 tool_raw_input: Some(Arc::new(input.clone())),
                                 tool_output,
@@ -645,6 +690,25 @@ fn build_loaded_tool(
     }
 }
 
+/// Images the user attached. A tool result also rides in a user message, and
+/// its images already render under the tool itself, so those stay out.
+fn user_images(msg: &Message) -> Vec<ImageSource> {
+    if msg
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+    {
+        return Vec::new();
+    }
+    msg.content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Image { source } => Some(source.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn build_tool_results_map(messages: &[Message]) -> HashMap<&str, (bool, &str)> {
     let mut map = HashMap::new();
     for msg in messages {
@@ -668,9 +732,123 @@ fn build_tool_results_map(messages: &[Message]) -> HashMap<&str, (bool, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maki_agent::{AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
+    use crate::components::IMAGE_PLACEHOLDER;
+    use maki_agent::{AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent};
     use maki_config::UiConfig;
+    use maki_providers::ImageMediaType;
     use test_case::test_case;
+
+    const IMAGE_DATA: &str = "dGVzdA==";
+    const EXPECTED_QUEUE_DELIVERY: &str = "a consumed queue item must carry its images";
+
+    fn image() -> ImageSource {
+        ImageSource::new(ImageMediaType::Png, Arc::from(IMAGE_DATA))
+    }
+
+    #[test_case(USER_TEXT, USER_TEXT ; "captioned")]
+    #[test_case("", IMAGE_PLACEHOLDER ; "image_only")]
+    fn history_delivers_images_without_synthetic_or_tool_attachments(text: &str, expected: &str) {
+        let mut hidden = Message::synthetic(USER_TEXT.into());
+        hidden.content.push(ContentBlock::Image { source: image() });
+        let mut observation = Message::observation(USER_TEXT.into());
+        observation
+            .content
+            .push(ContentBlock::Image { source: image() });
+        let tool_result = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: TASK_ID.into(),
+                    content: USER_TEXT.into(),
+                    is_error: false,
+                },
+                ContentBlock::Image { source: image() },
+            ],
+            ..Default::default()
+        };
+        let assistant = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Image { source: image() }],
+            ..Default::default()
+        };
+        let (display, _) = history_to_display(
+            &[
+                Message::user_with_images(text.into(), vec![image()]),
+                hidden,
+                observation,
+                tool_result,
+                assistant,
+            ],
+            &empty_outputs(),
+            &ToolOutputLines::default(),
+        );
+        assert_eq!(display.len(), 2);
+        assert_eq!(display[0].role, DisplayRole::User);
+        assert_eq!(display[0].text, expected);
+        assert_eq!(display[1].role, DisplayRole::Assistant);
+        assert_eq!(display[1].text, IMAGE_PLACEHOLDER);
+        for message in display {
+            assert_eq!(message.images.len(), 1);
+            assert_eq!(&*message.images[0].data, IMAGE_DATA);
+        }
+    }
+
+    #[test]
+    fn queued_user_images_reach_display() {
+        let mut chat = chat();
+        let result = chat.handle_event(
+            AgentEvent::QueueItemConsumed {
+                text: String::new(),
+                images: vec![image()],
+            },
+            None,
+        );
+        let ChatEventResult::QueueItemConsumed { text, images } = result else {
+            panic!("{EXPECTED_QUEUE_DELIVERY}");
+        };
+        chat.show_user_message(text, images);
+        let message = chat.message_at(0).unwrap();
+        assert_eq!(message.role, DisplayRole::User);
+        assert_eq!(message.text, IMAGE_PLACEHOLDER);
+        assert_eq!(message.images.len(), 1);
+        assert_eq!(&*message.images[0].data, IMAGE_DATA);
+    }
+
+    #[test_case("" ; "image_only")]
+    #[test_case(REPLY_TEXT ; "streamed_text")]
+    fn turn_complete_delivers_images_without_replaying_text(text: &str) {
+        let mut chat = chat();
+        text_delta(&mut chat, text);
+        chat.handle_event(
+            AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentBlock::Text { text: text.into() },
+                        ContentBlock::Image { source: image() },
+                    ],
+                    ..Default::default()
+                },
+                usage: Default::default(),
+                model: String::new(),
+                cost: None,
+                context_size: None,
+                context_window: 0,
+            })),
+            None,
+        );
+        let image_index = usize::from(!text.is_empty());
+        assert_eq!(chat.message_count(), image_index + 1);
+        if !text.is_empty() {
+            assert_eq!(chat.message_at(0).unwrap().text, text);
+            assert!(chat.message_at(0).unwrap().images.is_empty());
+        }
+        let message = chat.message_at(image_index).unwrap();
+        assert_eq!(message.role, DisplayRole::Assistant);
+        assert_eq!(message.text, IMAGE_PLACEHOLDER);
+        assert_eq!(message.images.len(), 1);
+        assert_eq!(&*message.images[0].data, IMAGE_DATA);
+    }
 
     fn tool_start(id: &str, tool: &str) -> AgentEvent {
         AgentEvent::ToolStart(Box::new(ToolStartEvent {
@@ -1182,7 +1360,7 @@ mod tests {
         end(&mut chat, TaskOutcome::Unknown);
         let ending = chat.message_count() - 1;
 
-        chat.show_user_message(USER_TEXT);
+        chat.show_user_message(USER_TEXT, Vec::new());
         text_delta(&mut chat, REPLY_TEXT);
         chat.flush();
         let before = chat.message_count();
@@ -1257,7 +1435,7 @@ mod tests {
         status: TaskStatus,
     ) {
         let mut chat = chat();
-        chat.show_user_message(USER_TEXT);
+        chat.show_user_message(USER_TEXT, Vec::new());
         end(&mut chat, first);
         let count = chat.message_count();
 

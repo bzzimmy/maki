@@ -8,7 +8,7 @@ use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
 use maki_agent::agent::estimate_message_tokens;
 use maki_lua::SessionEndReason;
-use maki_providers::{Model, TokenUsage};
+use maki_providers::{Model, RequestOptions, TokenUsage};
 use maki_storage::id::MakiId;
 use maki_storage::sessions::{SessionMeta, StoredSubagent};
 
@@ -150,6 +150,8 @@ impl App {
                     tool_use_id: tool_id.clone(),
                     name: chat.name.clone(),
                     model: chat.model_id.clone(),
+                    thinking: chat.opts.map(|o| o.thinking.into()),
+                    fast: chat.opts.is_some_and(|o| o.fast),
                 }
             })
             .collect();
@@ -239,6 +241,10 @@ impl App {
             );
             chat.set_restore_channel(self.restore_event_tx.clone());
             chat.model_id = sa.model;
+            chat.opts = sa.thinking.map(|thinking| RequestOptions {
+                thinking: thinking.into(),
+                fast: sa.fast,
+            });
             chat.load_messages(display);
             // The session file keeps the transcript but never how it ended,
             // so a reload admits that instead of guessing.

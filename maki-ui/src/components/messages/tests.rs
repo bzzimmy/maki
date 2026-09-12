@@ -8,11 +8,56 @@ use maki_agent::tools::{BASH_TOOL_NAME, GREP_TOOL_NAME, WRITE_TOOL_NAME};
 use maki_agent::{
     GrepFileEntry, GrepMatchGroup, SnapshotLine, SnapshotSpan, SpanStyle, ToolInput, ToolOutput,
 };
+use maki_providers::ImageMediaType;
 use ratatui::backend::TestBackend;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::time::Duration;
 use test_case::test_case;
+
+#[test_case(false ; "live")]
+#[test_case(true ; "loaded")]
+fn tool_images_survive_snapshot_rebuilds(loaded: bool) {
+    const TOOL_ID: &str = "image_tool";
+    const CAPTION: &str = "image caption";
+    const WIDTH: u16 = 80;
+    const SAME_IMAGE: &str = "a rebuild must reuse the image, not decode it again";
+    const FALLBACK_ROW: &str = "an image with no protocol still owns its row";
+
+    let source = ImageSource::new(ImageMediaType::Png, Arc::from("invalid image"));
+    let mut panel = panel_with_tools(&[(TOOL_ID, BASH_TOOL_NAME)]);
+    // No picker, so nothing is ever decoded and the test never touches the
+    // decode thread. What it watches is the segment keeping its image across
+    // rebuilds, and the text fallback in its place.
+    panel.image_picker = None;
+    rebuild(&mut panel);
+    panel.tool_done(ToolDoneEvent {
+        output: Arc::new(ToolOutput::Image {
+            source: source.clone(),
+            text: CAPTION.into(),
+        }),
+        ..done(TOOL_ID)
+    });
+    if loaded {
+        panel.load_messages(panel.messages.clone());
+        rebuild(&mut panel);
+    }
+    panel.tool_snapshot(TOOL_ID, BufferSnapshot::plain_text(CAPTION.into()), None);
+    let terminal = render(&mut panel, WIDTH, 24);
+    let index = panel.cache.find_by_tool_id(TOOL_ID).unwrap();
+    let segment = panel.cache.get(index).unwrap();
+    assert_eq!(segment.images.len(), 1);
+    assert!(
+        Arc::ptr_eq(&segment.images[0].source().data, &source.data),
+        "{SAME_IMAGE}"
+    );
+    assert_eq!(
+        segment.height(WIDTH - 1),
+        segment.text_height(WIDTH - 1) + 1,
+        "{FALLBACK_ROW}"
+    );
+    assert!(buffer_text(&terminal).contains(IMAGE_PLACEHOLDER));
+}
 
 fn snap_line(text: &str) -> SnapshotLine {
     SnapshotLine {
@@ -219,7 +264,7 @@ fn render_sel(
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            panel.view(f, f.area(), has_selection);
+            panel.view(f, f.area(), has_selection, true);
         })
         .unwrap();
     terminal

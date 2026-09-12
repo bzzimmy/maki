@@ -23,6 +23,12 @@ use crate::model::Model;
 
 const LOCAL_BUDGET_FIELD: &str = "thinking_budget_tokens";
 
+/// The two thinking modes that are neither an effort level nor a token count.
+/// `Display` and [`Model::thinking_options`] both spell them from here, so the
+/// picker offers exactly the strings the parser accepts.
+pub(crate) const THINKING_OFF: &str = "off";
+pub(crate) const THINKING_ADAPTIVE: &str = "adaptive";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageMediaType {
     Png,
@@ -110,6 +116,9 @@ impl ImageSource {
 
 pub const IMAGE_OMITTED_NOTE: &str =
     "[image omitted: the current model does not support image input]";
+/// Stands in for the text of a message that carries only images, both in model
+/// context and in the transcript. One const so the two can never drift apart.
+pub const IMAGE_PLACEHOLDER: &str = "[image]";
 /// See [`Message::empty_marker`].
 pub const EMPTY_RESPONSE_MARKER: &str = "(empty)";
 
@@ -415,7 +424,7 @@ pub const THINKING_USAGE: &str =
 /// Effort levels are percentages, so they need a ceiling even when the model
 /// never told us its output window. 32k matches common frontier thinking
 /// caps. Explicit user budgets never go through this.
-const FALLBACK_MAX_THINKING_BUDGET: u32 = 32_768;
+pub(crate) const FALLBACK_MAX_THINKING_BUDGET: u32 = 32_768;
 
 /// First Claude version that speaks adaptive thinking. Opus got there a
 /// generation early, at 4.7; the other families joined at 5.
@@ -757,12 +766,48 @@ impl ThinkingConfig {
             .map_err(|_| THINKING_USAGE)
     }
 
+    /// Caps this config at `parent`. A subagent's thinking request is written
+    /// by the model, not the user, so it may go down but never above what the
+    /// parent session runs with. `Adaptive` on either side means "let the model
+    /// decide" rather than a ceiling, so it never caps. Both sides compare as
+    /// token budgets, which is the only unit an effort level and an explicit
+    /// count share; the winner keeps its original form either way.
+    pub fn clamp_to(self, parent: Self) -> Self {
+        match (parent.budget(None), self.budget(None)) {
+            (Budgeted::Off, _) | (_, Budgeted::Off) => Self::Off,
+            (Budgeted::Adaptive, _) | (_, Budgeted::Adaptive) => self,
+            (Budgeted::Tokens(ceiling), Budgeted::Tokens(asked)) => {
+                if asked <= ceiling {
+                    self
+                } else {
+                    parent
+                }
+            }
+        }
+    }
+
+    /// The status bar already wraps this in brackets, so a level just names
+    /// itself. A raw count keeps its unit, or it reads like any other number
+    /// up there.
+    /// What the model will really run, so stored state can never disagree with
+    /// the request. Clamps both ways: down to `Off` where thinking is
+    /// unsupported, up to minimal effort where it is mandatory.
+    pub fn clamped(self, model: &Model) -> Self {
+        if !model.supports_thinking() {
+            return Self::Off;
+        }
+        if model.requires_thinking() && !self.is_enabled() {
+            return Self::Effort(Effort::Minimal);
+        }
+        self
+    }
+
     pub fn status_label(self) -> Option<Cow<'static, str>> {
         match self {
             Self::Off => None,
-            Self::Adaptive => Some(Cow::Borrowed("thinking")),
-            Self::Effort(e) => Some(Cow::Owned(format!("thinking: {e}"))),
-            Self::Budget(n) => Some(Cow::Owned(format!("thinking: {n}"))),
+            Self::Adaptive => Some(Cow::Borrowed(THINKING_ADAPTIVE)),
+            Self::Effort(e) => Some(Cow::Borrowed(e.as_str())),
+            Self::Budget(n) => Some(Cow::Owned(format!("{n} tokens"))),
         }
     }
 }
@@ -770,8 +815,8 @@ impl ThinkingConfig {
 impl std::fmt::Display for ThinkingConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Off => f.write_str("off"),
-            Self::Adaptive => f.write_str("adaptive"),
+            Self::Off => f.write_str(THINKING_OFF),
+            Self::Adaptive => f.write_str(THINKING_ADAPTIVE),
             Self::Effort(e) => f.write_str(e.as_str()),
             Self::Budget(n) => write!(f, "{n}"),
         }
@@ -819,17 +864,10 @@ pub struct RequestOptions {
 impl RequestOptions {
     /// Reconciles options with the model's capabilities. Called once before
     /// every request so UI state, restored sessions, and subagent flags all go
-    /// through the same gate. Despite the name, thinking clamps both ways:
-    /// down to `Off` when unsupported, up to minimal effort when required.
-    pub fn clamped(self, model: &crate::model::Model) -> Self {
+    /// through the same gate.
+    pub fn clamped(self, model: &Model) -> Self {
         Self {
-            thinking: if !model.supports_thinking() {
-                ThinkingConfig::Off
-            } else if model.requires_thinking() && !self.thinking.is_enabled() {
-                ThinkingConfig::Effort(Effort::Minimal)
-            } else {
-                self.thinking
-            },
+            thinking: self.thinking.clamped(model),
             fast: self.fast && model.supports_fast(),
         }
     }
@@ -899,6 +937,10 @@ mod tests {
 
     const INTERNED_DATA: &str = "aW50ZXJuZWQtcGF5bG9hZA==";
     const OTHER_DATA: &str = "b3RoZXItcGF5bG9hZA==";
+    /// Below `Minimal` against [`FALLBACK_MAX_THINKING_BUDGET`].
+    const SMALL_BUDGET: u32 = 2048;
+    /// Between `Medium` and `High` against [`FALLBACK_MAX_THINKING_BUDGET`].
+    const LARGE_BUDGET: u32 = 16_384;
 
     #[test_case("end_turn", StopReason::EndTurn   ; "end_turn")]
     #[test_case("tool_use", StopReason::ToolUse   ; "tool_use")]
@@ -1165,6 +1207,16 @@ mod tests {
         }
     }
 
+    /// The badge reads as whatever the session is set to, and stays quiet when
+    /// thinking is off.
+    #[test_case(ThinkingConfig::Off, None ; "off_shows_no_badge")]
+    #[test_case(ThinkingConfig::Adaptive, Some("adaptive") ; "adaptive")]
+    #[test_case(ThinkingConfig::Effort(High), Some("high") ; "effort_names_the_level")]
+    #[test_case(ThinkingConfig::Budget(8192), Some("8192 tokens") ; "budget_keeps_its_unit")]
+    fn thinking_status_label(config: ThinkingConfig, expected: Option<&str>) {
+        assert_eq!(config.status_label().as_deref(), expected);
+    }
+
     #[test_case(ThinkingConfig::Off,             Some(4096), Budgeted::Off            ; "off")]
     #[test_case(ThinkingConfig::Adaptive,        Some(4096), Budgeted::Adaptive       ; "adaptive")]
     #[test_case(ThinkingConfig::Effort(Max),     Some(4096), Budgeted::Tokens(4096)   ; "effort_delegates_to_level_budget")]
@@ -1178,6 +1230,26 @@ mod tests {
     #[test_case(ThinkingConfig::Effort(Minimal), None,       Budgeted::Tokens(3_276)  ; "unknown_max_minimal_effort")]
     fn thinking_budget_resolver(config: ThinkingConfig, max: Option<u32>, expected: Budgeted) {
         assert_eq!(config.budget(max), expected);
+    }
+
+    #[test_case(ThinkingConfig::Off, ThinkingConfig::Effort(Max), ThinkingConfig::Off ; "parent_off_wins_over_any_request")]
+    #[test_case(ThinkingConfig::Effort(Max), ThinkingConfig::Off, ThinkingConfig::Off ; "child_may_always_turn_it_off")]
+    #[test_case(ThinkingConfig::Adaptive, ThinkingConfig::Effort(Max), ThinkingConfig::Effort(Max) ; "parent_adaptive_is_not_a_ceiling")]
+    #[test_case(ThinkingConfig::Effort(Minimal), ThinkingConfig::Adaptive, ThinkingConfig::Adaptive ; "child_adaptive_passes_through")]
+    #[test_case(ThinkingConfig::Effort(Low), ThinkingConfig::Effort(Max), ThinkingConfig::Effort(Low) ; "effort_capped_at_parent")]
+    #[test_case(ThinkingConfig::Effort(Max), ThinkingConfig::Effort(Low), ThinkingConfig::Effort(Low) ; "effort_lower_child_kept")]
+    #[test_case(ThinkingConfig::Budget(SMALL_BUDGET), ThinkingConfig::Budget(LARGE_BUDGET), ThinkingConfig::Budget(SMALL_BUDGET) ; "budget_capped_at_parent")]
+    #[test_case(ThinkingConfig::Budget(LARGE_BUDGET), ThinkingConfig::Budget(SMALL_BUDGET), ThinkingConfig::Budget(SMALL_BUDGET) ; "budget_lower_child_kept")]
+    #[test_case(ThinkingConfig::Effort(Minimal), ThinkingConfig::Budget(LARGE_BUDGET), ThinkingConfig::Effort(Minimal) ; "mixed_parent_effort_caps_child_budget")]
+    #[test_case(ThinkingConfig::Effort(Max), ThinkingConfig::Budget(SMALL_BUDGET), ThinkingConfig::Budget(SMALL_BUDGET) ; "mixed_lower_child_budget_keeps_its_tokens")]
+    #[test_case(ThinkingConfig::Budget(SMALL_BUDGET), ThinkingConfig::Effort(High), ThinkingConfig::Budget(SMALL_BUDGET) ; "mixed_parent_budget_caps_child_effort")]
+    #[test_case(ThinkingConfig::Budget(LARGE_BUDGET), ThinkingConfig::Effort(Minimal), ThinkingConfig::Effort(Minimal) ; "mixed_lower_child_effort_keeps_its_level")]
+    fn thinking_clamp_to_parent(
+        parent: ThinkingConfig,
+        child: ThinkingConfig,
+        expected: ThinkingConfig,
+    ) {
+        assert_eq!(child.clamp_to(parent), expected);
     }
 
     #[test_case(ThinkingConfig::Off,          json!({})                                                                  ; "off")]

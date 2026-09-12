@@ -8,10 +8,12 @@ use color_eyre::Result;
 use color_eyre::eyre::Context;
 
 use maki_config::Config;
+use maki_config::project::TrustMode;
 use maki_lua::{DiscoveredPackage, Interaction, PluginHost};
 use maki_storage::StateDir;
 
-use crate::cli::{AuthAction, Cli, Command, McpAction, MigrateAction, SessionAction};
+use crate::cli::{AuthAction, Cli, Command, McpAction, MigrateAction, SessionAction, TrustAction};
+use crate::project_trust;
 use crate::update;
 
 fn sanitize_warnings(warnings: &[String]) -> Vec<String> {
@@ -115,6 +117,13 @@ fn declared_packages(host: &PluginHost) -> Result<Vec<maki_lua::Declared>> {
 }
 
 pub fn dispatch(cli: Cli) -> Result<()> {
+    // `--trust` is a grant for this process, so every entry point under it
+    // reads the same shared project config the TUI would.
+    let trust_mode = if cli.trust {
+        TrustMode::Session
+    } else {
+        TrustMode::Skip
+    };
     match cli.command {
         Some(Command::Auth { action }) => {
             let storage = StateDir::resolve().context("resolve data directory")?;
@@ -127,9 +136,11 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Some(Command::Index { path }) => {
-            subcmd::index(&path, cli.no_plugins, cli.no_jit)?;
+            subcmd::index(&path, cli.no_plugins, cli.no_jit, trust_mode)?;
         }
-        Some(Command::Models { refresh }) => subcmd::models(cli.no_plugins, cli.no_jit, refresh)?,
+        Some(Command::Models { refresh }) => {
+            subcmd::models(cli.no_plugins, cli.no_jit, refresh, trust_mode)?
+        }
         Some(Command::Session { action }) => {
             let storage = StateDir::resolve().context("resolve data directory")?;
             match action {
@@ -142,7 +153,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Some(Command::Mcp { action }) => {
             let storage = StateDir::resolve().context("resolve data directory")?;
             match action {
-                McpAction::Auth { server } => subcmd::mcp_auth(&server, &storage)?,
+                McpAction::Auth { server } => subcmd::mcp_auth(&server, &storage, trust_mode)?,
                 McpAction::Logout { server } => subcmd::mcp_logout(&server, &storage)?,
             }
         }
@@ -153,18 +164,40 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             update::rollback().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
         }
         Some(Command::Acp { model, yolo }) => {
-            acp::run(model, yolo, cli.no_plugins, cli.no_jit)?;
+            acp::run(model, yolo, cli.no_plugins, cli.no_jit, trust_mode)?;
         }
         Some(Command::Migrate { action }) => match action {
             MigrateAction::Xdg => migrate::xdg()?,
         },
+        Some(Command::Trust { action }) => {
+            let storage = StateDir::resolve().context("resolve state directory")?;
+            match action {
+                TrustAction::Add { path, yes } => {
+                    project_trust::add(&storage, path.as_deref(), yes)?
+                }
+                TrustAction::Remove { path } => project_trust::remove(&storage, path.as_deref())?,
+                TrustAction::List => {
+                    for decision in project_trust::list(&storage)? {
+                        println!("{decision}");
+                    }
+                }
+            }
+        }
         Some(Command::Prompt {
             variant,
             plan,
             tools,
             names,
         }) => {
-            subcmd::prompt(&variant, plan, tools, names, cli.no_plugins, cli.no_jit)?;
+            subcmd::prompt(
+                &variant,
+                plan,
+                tools,
+                names,
+                cli.no_plugins,
+                cli.no_jit,
+                trust_mode,
+            )?;
         }
         None => {
             tui::run(cli)?;

@@ -25,8 +25,7 @@ Type `/` in the input box to open the command palette.
 | `/cd` | Change working directory |
 | `/btw` | Ask a quick question (no tools, no history pollution) |
 | `/yolo` | Toggle YOLO mode (skip all permission prompts) |
-| `/thinking` | Toggle extended thinking (off, adaptive, effort level, or budget) |
-| `/fast` | Toggle fast mode for Anthropic Opus (API) or eligible Codex subscription models (ChatGPT OAuth) |
+| `/fast` | Toggle Anthropic fast mode (Opus only) |
 | `/workflow` | Toggle workflow mode (task callable inside code_execution) |
 | `/exit` | Exit the application |
 | `/reload` | Reload plugins and config |
@@ -36,6 +35,7 @@ Type `/` in the input box to open the command palette.
 | `/rename` | Rename the current session |
 | `/sessions` | Browse and switch sessions |
 | `/tasks` | Browse and search tasks |
+| `/thinking` | Extended thinking: pick an effort level, or set one directly |
 
 ## Sessions
 
@@ -44,8 +44,8 @@ Sessions run concurrently. `/new` starts a fresh session while the old one keeps
 ## Modes and toggles
 
 - **`/yolo`**: skip permission prompts for this session (deny rules still apply). The toggle survives a resume, and `--yolo` only sets the starting value. Config: `always_yolo = true`.
-- **`/thinking`**: extended thinking. Optional arg: `off`, `adaptive`, an effort level (`minimal` … `max`), or a token budget number. Config: `always_thinking`.
-- **`/fast`**: Fast mode for Anthropic Opus (API) or eligible Codex subscription models (ChatGPT OAuth; not OpenAI API keys; ignored on other models). Config: `always_fast = true`.
+- **`/thinking`**: extended thinking. Bare, or `Alt+T`, it opens a picker of the effort levels with what each one costs in tokens; `Enter` applies the selected level and `Esc` closes without changing anything. With an argument it sets the level directly: `off`, `adaptive`, an effort level (`minimal` … `max`), or a token budget number. Config: `always_thinking`.
+- **`/fast`**: Anthropic fast mode (Opus only; ignored on other models). Config: `always_fast = true`.
 - **`/workflow`**: let `code_execution` call the `task` tool (and other workflow-only tools) from inside the Python sandbox. Config: `always_workflow = true`.
 - **Plan / build**: not a slash command. Press `Tab` in the input to toggle plan mode (plan-file writes only).
 - **`/reload`**: rebuild plugins and config without leaving the app.

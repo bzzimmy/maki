@@ -29,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use humantime::format_duration;
 use ignore::WalkBuilder;
+use maki_config::ProjectConfig;
 use serde_json::Value;
 
 use crate::agent::LoadedInstructions;
@@ -599,6 +600,7 @@ pub fn interpreter_ctx(
 pub fn cli_tool_ctx() -> ToolContext {
     let (tx, _rx) = flume::unbounded::<crate::Envelope>();
     let event_tx = crate::EventSender::new(tx, 0);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     interpreter_ctx(
         &AgentMode::Build,
         &event_tx,
@@ -609,7 +611,8 @@ pub fn cli_tool_ctx() -> ToolContext {
                 rules: vec![],
                 ..Default::default()
             },
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            cwd.clone(),
+            ProjectConfig::discover(&cwd),
             Arc::default(),
         )),
         FileAccess::fresh(),
@@ -630,15 +633,29 @@ pub mod test_support {
     /// Registry and routing tests care about the name and audience only, never
     /// about what the tool returns.
     pub fn mock_tool(name: &str, audience: ToolAudience) -> Arc<dyn registry::Tool> {
+        mock_tool_with_schema(
+            name,
+            audience,
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false}),
+        )
+    }
+
+    pub fn mock_tool_with_schema(
+        name: &str,
+        audience: ToolAudience,
+        schema: Value,
+    ) -> Arc<dyn registry::Tool> {
         Arc::new(MockTool {
             name: name.to_owned(),
             audience,
+            schema,
         })
     }
 
     struct MockTool {
         name: String,
         audience: ToolAudience,
+        schema: Value,
     }
 
     struct MockInvocation;
@@ -660,7 +677,7 @@ pub mod test_support {
             "mock tool".into()
         }
         fn schema(&self) -> Value {
-            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+            self.schema.clone()
         }
         fn audience(&self) -> ToolAudience {
             self.audience
@@ -719,6 +736,7 @@ pub mod test_support {
                 ..Default::default()
             },
             std::path::PathBuf::from("/tmp"),
+            ProjectConfig::discover(Path::new("/tmp")),
             Arc::default(),
         ))
     });

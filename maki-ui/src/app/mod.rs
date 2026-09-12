@@ -51,6 +51,7 @@ use crate::components::{
     Action, DisplayMessage, DisplayRole, ExitRequest, Overlay, RetryInfo, Status, is_ctrl,
 };
 use crate::image;
+use crate::markdown::TRUNCATION_PREFIX;
 use crate::repaint::{Cadence, Dirty, Watch};
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -105,6 +106,10 @@ const IMPLEMENT_PARALLEL_HINT: &str = "Use batch+task to parallelize, assign eac
 
 const MISSING_TOOL_COMPLETION: &str = "Tool did not report completion before the turn ended";
 const NOTIFICATION_PREVIEW_CHARS: usize = 200;
+/// An API error carries the provider's raw response body, sometimes a whole
+/// HTML page from a broken proxy, and the bubble stays for the rest of the
+/// session. Well above any real error message, small enough to not drown chat.
+const ERROR_BUBBLE_MAX_CHARS: usize = 2_000;
 
 /// Depth budget for `maki.api.run_command` chains. Aliases nest a level or two
 /// in practice; the cap only exists so a command aliasing itself reports an
@@ -166,6 +171,13 @@ fn notification_preview<'a>(chunks: impl Iterator<Item = &'a str>) -> Option<Str
 
 fn normalize_preview(text: &str) -> Option<String> {
     notification_preview(std::iter::once(text))
+}
+
+fn cap_error_text(message: &str) -> String {
+    match message.char_indices().nth(ERROR_BUBBLE_MAX_CHARS) {
+        Some((end, _)) => format!("{}{TRUNCATION_PREFIX}", &message[..end]),
+        None => message.to_owned(),
+    }
 }
 
 pub(crate) fn turn_response(message: &Message) -> Option<String> {
@@ -399,14 +411,18 @@ impl App {
         );
     }
 
-    /// Takes the spelling both `/thinking` and `maki.model.set` accept; a
-    /// blank {input} toggles.
+    /// Takes the spelling `maki.model.set` accepts, which is what the
+    /// `/thinking` plugin passes through. A blank {input} toggles.
+    ///
+    /// Stores the clamped value rather than the typed one, so the status bar
+    /// can never read `off` on a model that is really sending minimal effort.
     pub(crate) fn set_thinking(&mut self, input: &str) -> Result<ThinkingConfig, String> {
         if !self.state.model.supports_thinking() {
             return Err(THINKING_UNSUPPORTED_MSG.into());
         }
-        self.state.thinking =
-            ThinkingConfig::parse(input.trim(), self.state.thinking).map_err(str::to_owned)?;
+        self.state.thinking = ThinkingConfig::parse(input.trim(), self.state.thinking)
+            .map_err(str::to_owned)?
+            .clamped(&self.state.model);
         if let Err(error) = persist_thinking(&self.storage, &self.state.thinking.into()) {
             tracing::warn!(%error, thinking = %self.state.thinking, "failed to persist thinking preference");
         }
@@ -430,6 +446,7 @@ impl App {
             "id": model.id,
             "provider": model.provider.to_string(),
             "thinking": self.state.thinking.to_string(),
+            "thinking_options": model.thinking_options(),
             "fast": self.state.fast,
             "supports_thinking": model.supports_thinking(),
             "supports_fast": model.supports_fast(),
@@ -1057,7 +1074,7 @@ impl App {
             let id = self.shell.reserve_id();
             let sigil = if prefix.visible { "!" } else { "!!" };
             let display = format!("{sigil} {}", prefix.command);
-            self.main_chat().show_user_message(display);
+            self.main_chat().show_user_message(display, Vec::new());
             return vec![Action::ShellCommand {
                 id,
                 command: prefix.command,
@@ -1248,16 +1265,17 @@ impl App {
         };
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
-        if let ChatEventResult::QueueItemConsumed { text, image_count } = result {
+        if let ChatEventResult::QueueItemConsumed { text, images } = result {
             if chat_idx == 0 {
-                self.on_queue_item_consumed(&text, image_count);
+                self.on_queue_item_consumed(text, images);
             }
             return vec![];
         }
 
         if let ChatEventResult::PermissionRequest { id, tool, scopes } = result {
+            let project_trusted = self.permissions.project_is_trusted();
             self.permission_prompt
-                .open(id, tool, scopes, subagent_id.clone());
+                .open(id, tool, scopes, subagent_id.clone(), project_trusted);
             return vec![];
         }
 
@@ -1291,6 +1309,10 @@ impl App {
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message.clone());
                     self.status_bar.clear_flash();
+                    self.main_chat().push(DisplayMessage::new(
+                        DisplayRole::Error,
+                        cap_error_text(&message),
+                    ));
                     self.subagent_answers.clear();
                     self.terminalize_turn(&message);
                     self.recoverable_queue = self.queue.text_messages();
@@ -1332,6 +1354,7 @@ impl App {
         );
         chat.set_restore_channel(self.restore_event_tx.clone());
         chat.model_id = subagent.model.clone();
+        chat.opts = subagent.opts;
         if let Some(ref prompt) = subagent.prompt {
             chat.push_user_message(prompt);
         }
@@ -1429,13 +1452,6 @@ impl App {
                     "YOLO mode disabled"
                 };
                 self.flash(msg.into());
-                vec![]
-            }
-            "/thinking" => {
-                match self.set_thinking(&cmd.args) {
-                    Ok(thinking) => self.flash(format!("Thinking: {thinking}")),
-                    Err(msg) => self.flash(msg),
-                }
                 vec![]
             }
             "/fast" => {
@@ -1894,12 +1910,4 @@ fn sync_search_highlight(modal: &SearchModal, chat: &mut Chat) {
         chat.scroll_to_segment(i);
     }
     chat.set_highlight_segment(idx);
-}
-
-fn format_with_images(text: &str, image_count: usize) -> String {
-    match image_count {
-        0 => text.to_string(),
-        1 => format!("{text} [1 image]"),
-        n => format!("{text} [{n} images]"),
-    }
 }

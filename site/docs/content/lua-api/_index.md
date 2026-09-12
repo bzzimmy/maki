@@ -443,6 +443,7 @@ maki.api.register_tool({
   description = "Count words in a file.",
   kind = "read",
   schema = {
+    type = "object",
     properties = { path = { type = "string", description = "File path" } },
     required = { "path" },
   },
@@ -1267,8 +1268,8 @@ and tool set.
     starts with no loaded tools of its own. Default: `true`.
   - `thinking` (`string|integer?`) thinking mode: `"off"`, `"adaptive"`, an
     effort level (`"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`,
-    `"max"`), or a budget integer (token count). Inherits parent setting
-    if omitted.
+    `"max"`), or a budget integer (token count). Inherits the parent
+    setting if omitted, and is capped at it otherwise.
   - `fast` (`boolean?`) use fast mode. Inherits parent setting if omitted.
 
 **Returns:** ([`Session?`](#maki-agent-Session), `string?`) Session handle, or `(nil, err)` on failure.
@@ -3224,14 +3225,24 @@ Reads the focused session's model, thinking level, and fast mode.
 `thinking` comes back in the spelling `set` accepts, so a table from here
 can go straight back in.
 
-**Returns:** (`table|nil`, `string|nil`) `{spec, id, provider, thinking, fast,
-  supports_thinking, supports_fast}`, or nil and an error.
+`thinking_options` is every thinking value this model accepts, cheapest
+first: `{name, tokens?}` per row, where `tokens` is the budget maki would
+send for that row and is absent on `off` and `adaptive`. It is empty exactly
+when `supports_thinking` is false, so a picker can render the ladder from it
+without knowing the levels.
+
+**Returns:** (`table|nil`, `string|nil`) `{spec, id, provider, thinking,
+  thinking_options, fast, supports_thinking, supports_fast}`, or nil and an
+  error.
 
 **Example:**
 
 ```lua
 local m = maki.model.get()
 if m.spec ~= "anthropic/claude-opus-4-6" then ... end
+for _, option in ipairs(m.thinking_options) do
+  print(option.name, option.tokens)
+end
 ```
 
 ---

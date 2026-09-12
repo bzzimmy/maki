@@ -49,6 +49,7 @@ If you pass a prompt (or pipe stdin) without `--print`, the TUI still opens and 
 | `--no-plugins` | Skip user `init.lua` (global and project); keep the Lua host and builtin plugins so tools and the default keymap still load |
 | `--no-jit` | Run plugin Lua on the interpreter with full debug info |
 | `--yolo` | Skip permission prompts on gated tools (alias: `--dangerously-skip-permissions`). Deny rules still apply |
+| `--trust` | Load the project's `.maki` config for this run without asking, recording no decision. See [Folder Trust](/docs/folder-trust/#containers-and-ci) |
 | `--exit-on-done` | Exit when the agent finishes (TUI automation wrappers) |
 | `--allowed-tools <LIST>` | Comma-separated allow list (PascalCase or snake_case) |
 | `--disallowed-tools <LIST>` | Comma-separated deny list |
@@ -169,6 +170,20 @@ maki migrate xdg
 ```
 
 Moves data from `~/.maki/` into platform directories. Safe to re-run. See [Configuration](/docs/configuration/#directory-layout).
+
+### `maki trust`
+
+```bash
+maki trust add [PATH]
+maki trust add [PATH] --yes
+maki trust remove [PATH]
+maki trust list
+```
+
+Records whether a folder's `.maki` configuration may load. `PATH` defaults to
+the current directory, `--yes` skips the confirmation, and `list` shows trusted
+and rejected folders. See [Folder Trust](/docs/folder-trust/) for what is gated
+and for the `--trust` flag that grants trust for a single run.
 
 ## Everyday examples
 

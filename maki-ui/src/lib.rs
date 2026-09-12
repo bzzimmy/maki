@@ -32,6 +32,7 @@ mod agent;
 mod event_loop;
 mod input;
 mod terminal;
+mod terminal_image;
 
 use std::time::Instant;
 

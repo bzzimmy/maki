@@ -100,12 +100,6 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         bang: false,
     },
     BuiltinCommand {
-        name: "/thinking",
-        description: "Toggle extended thinking (off, adaptive, effort level, or budget)",
-        max_args: 1,
-        bang: false,
-    },
-    BuiltinCommand {
         name: "/fast",
         description: "Toggle fast mode for Anthropic Opus (API) or eligible Codex subscription models (ChatGPT OAuth)",
         max_args: 0,

@@ -16,10 +16,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::manifest::{ManifestRegistry, ProviderManifest};
 use crate::model_registry;
+use crate::providers::catalog::{self, CatalogMeta};
 use crate::providers::{
-    anthropic, aperture, catalog, copilot, custom, dynamic, local, openai, openrouter,
+    anthropic, aperture, copilot, custom, dynamic, local, openai, openrouter,
 };
-use crate::types::{ThinkingConfig, ThinkingFields, dialect};
+use crate::types::{
+    FALLBACK_MAX_THINKING_BUDGET, THINKING_ADAPTIVE, THINKING_OFF, ThinkingConfig, ThinkingFields,
+    dialect,
+};
 
 const PER_MILLION: f64 = 1_000_000.0;
 
@@ -207,6 +211,75 @@ pub(crate) fn lookup_entry<'a>(
         .ok_or_else(|| ModelError::UnknownModel(model_id.to_string()))
 }
 
+const SNAPSHOT_DATE_DIGITS: usize = 8;
+
+/// A provider pins a release by stamping a date on an id it already ships,
+/// either `claude-sonnet-4-5-20250929` or `gpt-5.4-2026-03-11`. Both are the
+/// same model as the row they extend, unlike a version bump such as
+/// `claude-opus-5-2`, and the digit count is what tells the two apart.
+fn is_snapshot_suffix(suffix: &str) -> bool {
+    let Some(date) = suffix.strip_prefix('-') else {
+        return false;
+    };
+    date.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        && date.bytes().filter(u8::is_ascii_digit).count() == SNAPSHOT_DATE_DIGITS
+}
+
+/// Whether a curated row names *this* model rather than merely sharing a prefix
+/// with it. [`lookup_entry`] matches by prefix so dated snapshots resolve to
+/// their base row, which also means `glm-5` answers for `glm-5.4`, a model it
+/// has never been checked against.
+fn names_exactly(entry: &ModelEntry, model_id: &str) -> bool {
+    entry.prefixes.iter().any(|prefix| {
+        model_id
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || is_snapshot_suffix(rest))
+    })
+}
+
+/// Everything that can describe one model, ranked by how sure it is to be about
+/// that model and not its neighbour.
+struct ModelSources<'a> {
+    /// The curated row [`lookup_entry`] reached, exact or not.
+    entry: Option<&'a ModelEntry>,
+    /// `entry` names this id. Such a row was checked against the provider's own
+    /// pricing page, so nothing outranks it but live discovery. A row reached
+    /// by prefix is still the right family and a usable guess at the rest, but
+    /// nobody ever checked it against the id we were handed.
+    exact: bool,
+    /// models.dev, which lists releases our tables have not caught up to. Read
+    /// only when already warm, so this is `None` on a cold start.
+    catalog: Option<CatalogMeta>,
+}
+
+impl<'a> ModelSources<'a> {
+    fn resolve(manifest: &'a ProviderManifest, model_id: &str) -> Self {
+        let entry = lookup_entry(manifest.models, model_id).ok();
+        let exact = entry.is_some_and(|entry| names_exactly(entry, model_id));
+        Self {
+            entry,
+            exact,
+            catalog: (!exact)
+                .then(|| catalog::model_meta_if_available(manifest.slug, model_id))
+                .flatten(),
+        }
+    }
+
+    /// Exact row, then the catalog, then the same row as a mere relative, so
+    /// the last rung only ever answers when the first was skipped.
+    fn pick<T>(
+        &self,
+        from_entry: impl Fn(&ModelEntry) -> Option<T>,
+        from_catalog: impl Fn(&CatalogMeta) -> Option<T>,
+    ) -> Option<T> {
+        self.entry
+            .filter(|_| self.exact)
+            .and_then(&from_entry)
+            .or_else(|| self.catalog.as_ref().and_then(from_catalog))
+            .or_else(|| self.entry.and_then(&from_entry))
+    }
+}
+
 impl ModelFamily {
     pub fn supports_tool_examples(self) -> bool {
         match self {
@@ -253,6 +326,18 @@ pub enum FastSupport {
     Unsupported,
 }
 
+/// One row of the thinking ladder: a value this model accepts, and what it
+/// costs here. Frontends render the ladder from this instead of keeping their
+/// own copy of the levels.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ThinkingOption {
+    pub name: &'static str,
+    /// The budget maki would send for this row, already floored and capped.
+    /// Absent on rows that are not a token budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Model {
     pub id: String,
@@ -283,30 +368,39 @@ impl Model {
         self.display_name.as_deref().unwrap_or(&self.id)
     }
 
-    /// When no static entry matches (a freshly released model the table has not
-    /// caught up to yet), fall back to the provider defaults so it still resolves.
+    /// Rates and limits come from the most specific source that names this
+    /// model: live discovery, then [`ModelSources`], then provider defaults.
+    /// Family and tier are about which dialect a model speaks and what role it
+    /// plays, which a relative answers just as well, so they read the curated
+    /// row whether or not it was an exact match.
     fn from_base(manifest: &ProviderManifest, slug: &str, model_id: &str) -> Self {
-        let static_entry = lookup_entry(manifest.models, model_id).ok();
+        let sources = ModelSources::resolve(manifest, model_id);
+        let entry = sources.entry;
         let spec = format!("{slug}/{model_id}");
         // Discovery keys `known_models` by the builtin slug, so a dynamic or
         // custom slug reads positional tiers and metadata through its base.
         let discovered = model_registry::discovered(manifest.slug, model_id);
         let discovered = discovered.as_ref();
-        let tier = model_registry::tier_for(&spec, manifest.slug, static_entry.map(|e| e.tier));
-        let family = static_entry.map_or(manifest.family, |entry| entry.family);
+        let tier = model_registry::tier_for(&spec, manifest.slug, entry.map(|e| e.tier));
+        let family = entry.map_or(manifest.family, |entry| entry.family);
         let discovered_pricing = discovered.and_then(|info| info.pricing.as_ref());
         let pricing = discovered_pricing
-            .or_else(|| static_entry.map(|entry| &entry.pricing))
             .cloned()
+            .or_else(|| {
+                sources.pick(
+                    |entry| Some(entry.pricing.clone()),
+                    |meta| meta.pricing.clone(),
+                )
+            })
             .unwrap_or_default();
         let max_output_tokens = discovered
             .and_then(|info| info.max_output_tokens)
-            .or_else(|| static_entry.and_then(|entry| entry.max_output_tokens))
+            .or_else(|| sources.pick(|entry| entry.max_output_tokens, |meta| meta.output))
             .or(manifest.fallback_max_output);
         let context_window = discovered
             .and_then(|info| info.context_window)
             .or_else(|| anthropic::shared::long_context_window(model_id))
-            .or_else(|| static_entry.map(|entry| entry.context_window))
+            .or_else(|| sources.pick(|entry| Some(entry.context_window), |meta| meta.context))
             .unwrap_or(manifest.fallback_context_window);
         Self {
             id: model_id.to_string(),
@@ -332,11 +426,8 @@ impl Model {
     /// builtin; metadata is read once from the models.dev catalog and cached on
     /// the `Model` so `supports_thinking`/`supports_vision` do not need a live
     /// catalog lookup.
-    fn from_catalog(
-        slug: &str,
-        model_id: &str,
-        meta: crate::providers::catalog::CatalogMetaView,
-    ) -> Self {
+    fn from_catalog(slug: &str, model_id: &str, meta: CatalogMeta) -> Self {
+        let (context_window, max_output_tokens) = (meta.context_window(), meta.max_output());
         Self {
             id: model_id.to_string(),
             display_name: None,
@@ -344,20 +435,14 @@ impl Model {
             tier: ModelTier::Medium,
             family: ModelFamily::Generic,
             supports_tool_examples_override: None,
-            thinking_override: ThinkingSupport::from_flags(Some(meta.supports_thinking), false),
+            thinking_override: ThinkingSupport::from_flags(meta.supports_thinking, false),
             reasoning_efforts: Vec::new(),
-            supports_vision_override: Some(meta.supports_vision),
+            supports_vision_override: meta.supports_vision,
             supports_fast_override: None,
-            pricing: ModelPricing {
-                input: meta.input_price,
-                output: meta.output_price,
-                cache_write: meta.cache_write,
-                cache_read: meta.cache_read,
-                fast: None,
-            },
+            pricing: meta.pricing.unwrap_or_default(),
             discovered_free: false,
-            max_output_tokens: Some(meta.output),
-            context_window: meta.context,
+            max_output_tokens: Some(max_output_tokens),
+            context_window,
             thinking_fields: None,
         }
     }
@@ -373,6 +458,11 @@ impl Model {
         };
         model_registry::discovered(manifest.slug, &self.id)
             .and_then(|d| d.supports_thinking)
+            .or_else(|| {
+                ModelSources::resolve(manifest, &self.id)
+                    .catalog?
+                    .supports_thinking
+            })
             .unwrap_or(manifest.supports_thinking)
     }
 
@@ -449,29 +539,20 @@ impl Model {
                 && openrouter::requires_thinking(self))
     }
 
-    /// Vision support, most specific first:
-    /// 1. per-model override
-    /// 2. discovery
-    /// 3. manifest entry
-    /// 4. warm models.dev metadata (builtins skip the catalog in from_spec)
-    /// 5. the family default
+    /// Vision support, most specific first: per-model override, discovery,
+    /// [`ModelSources`], the family default.
     pub fn supports_vision(&self) -> bool {
         if let Some(vision) = self.supports_vision_override {
             return vision;
         }
-        let manifest = ManifestRegistry::for_slug(&self.provider);
-        manifest
-            .and_then(|m| {
-                model_registry::discovered(m.slug, &self.id).and_then(|d| d.supports_vision)
-            })
+        let Some(manifest) = ManifestRegistry::for_slug(&self.provider) else {
+            return self.family.supports_vision();
+        };
+        model_registry::discovered(manifest.slug, &self.id)
+            .and_then(|d| d.supports_vision)
             .or_else(|| {
-                manifest
-                    .and_then(|m| lookup_entry(m.models, &self.id).ok())
-                    .map(|e| e.vision)
-            })
-            .or_else(|| {
-                crate::providers::catalog::model_meta_if_available(&self.provider, &self.id)
-                    .map(|meta| meta.supports_vision)
+                ModelSources::resolve(manifest, &self.id)
+                    .pick(|entry| Some(entry.vision), |meta| meta.supports_vision)
             })
             .unwrap_or_else(|| self.family.supports_vision())
     }
@@ -490,6 +571,37 @@ impl Model {
             .map(|n| (n / 2).max(MIN_THINKING_BUDGET))
     }
 
+    /// Every thinking value this model accepts, cheapest first, with the budget
+    /// each effort level resolves to here. Empty exactly when the model has no
+    /// thinking support, so an empty list is the one check a caller needs
+    /// before offering the ladder. Rows come from [`Self::thinking_levels`], so
+    /// the picker sees the same provider-specific ladder as `Shift+Tab`.
+    pub fn thinking_options(&self) -> Vec<ThinkingOption> {
+        let max = self
+            .max_thinking_budget()
+            .unwrap_or(FALLBACK_MAX_THINKING_BUDGET);
+        self.thinking_levels()
+            .into_iter()
+            .map(|level| match level {
+                ThinkingConfig::Off => ThinkingOption { name: THINKING_OFF, tokens: None },
+                ThinkingConfig::Adaptive => ThinkingOption { name: THINKING_ADAPTIVE, tokens: None },
+                ThinkingConfig::Effort(effort) => ThinkingOption {
+                    name: effort.as_str(),
+                    tokens: Some(effort.budget(max)),
+                },
+                ThinkingConfig::Budget(tokens) => ThinkingOption {
+                    name: Effort::from_budget(tokens, max).as_str(),
+                    tokens: Some(tokens),
+                },
+            })
+            .collect()
+    }
+
+    /// A model supports fast mode exactly when it carries fast-tier pricing, so
+    /// capability and billing can never disagree. The provider gate keeps fast
+    /// mode to Anthropic-based providers, resolved through the base manifest so
+    /// oauth scripts keep it; Bedrock separately ignores `opts.fast` at request
+    /// time.
     pub fn supports_fast(&self) -> bool {
         match self.supports_fast_override {
             Some(FastSupport::Supported) => true,
@@ -644,7 +756,7 @@ impl Model {
             return Ok(model);
         }
 
-        if let Some(meta) = crate::providers::catalog::model_meta_if_available(slug, model_id) {
+        if let Some(meta) = catalog::model_meta_if_available(slug, model_id) {
             return Ok(Self::from_catalog(slug, model_id, meta));
         }
 
@@ -660,8 +772,7 @@ impl Model {
     /// reflect catalog prices when discovery hasn't seeded the registry, and
     /// which reads zero for "price unknown" too.
     pub fn is_free(&self) -> bool {
-        self.discovered_free
-            || crate::providers::catalog::free_model_if_available(&self.provider, &self.id)
+        self.discovered_free || catalog::free_model_if_available(&self.provider, &self.id)
     }
 }
 
@@ -858,6 +969,7 @@ mod tests {
     ];
 
     const EPSILON: f64 = 1e-10;
+
     /// The only builtin whose rates move with the wall clock.
     const SCHEDULED_PROVIDERS: [&str; 1] = ["deepseek"];
     const DEEPSEEK_SPEC: &str = "deepseek/deepseek-v4-pro";
@@ -889,6 +1001,48 @@ mod tests {
         cache_read: 0.0,
         fast: None,
     };
+
+    #[test_case(&["claude-sonnet-4-5"], "claude-sonnet-4-5"; "the id itself")]
+    #[test_case(&["claude-sonnet-4-5"], "claude-sonnet-4-5-20250929"; "anthropic snapshot")]
+    #[test_case(&["gpt-5.4"], "gpt-5.4-2026-03-11"; "openai snapshot")]
+    fn a_curated_row_names_its_own_dated_snapshots(
+        prefixes: &'static [&'static str],
+        model_id: &str,
+    ) {
+        assert!(names_exactly(&entry_named(prefixes), model_id));
+    }
+
+    /// Each of these is a different model that merely starts with the row's id.
+    /// Letting the row answer for them is how `glm-5.4` would bill at `glm-5`
+    /// rates forever, silently, rather than reading models.dev.
+    #[test_case(&["glm-5"], "glm-5.4"; "version bump")]
+    #[test_case(&["glm-5"], "glm-5-code"; "named variant")]
+    #[test_case(&["claude-opus-5"], "claude-opus-5-2"; "version bump behind a dash")]
+    #[test_case(&["deepseek-flash"], "deepseek-flash-preview"; "preview of a relative")]
+    fn a_curated_row_does_not_name_its_relatives(
+        prefixes: &'static [&'static str],
+        model_id: &str,
+    ) {
+        let entry = entry_named(prefixes);
+        assert!(!names_exactly(&entry, model_id));
+        assert!(
+            lookup_entry(std::slice::from_ref(&entry), model_id).is_ok(),
+            "still the right row for family and tier, just not for rates"
+        );
+    }
+
+    fn entry_named(prefixes: &'static [&'static str]) -> ModelEntry {
+        ModelEntry {
+            prefixes,
+            tier: ModelTier::Medium,
+            family: ModelFamily::Generic,
+            vision: false,
+            default: false,
+            pricing: ModelPricing::default(),
+            max_output_tokens: None,
+            context_window: 0,
+        }
+    }
 
     #[test_case(999, "999"         ; "under_thousand")]
     #[test_case(1_000, "1.0k"      ; "thousand")]
@@ -1460,5 +1614,67 @@ mod tests {
             }
         );
         assert_eq!(COUNTERS.billed(None).cost, None);
+    }
+
+    /// Twice [`FALLBACK_MAX_THINKING_BUDGET`], so a declared window and a
+    /// missing one land on the same ceiling.
+    const ROOMY_OUTPUT: u32 = 65_536;
+    /// Halves to 1024, the floor, so every level collapses onto it.
+    const TINY_OUTPUT: u32 = 2_048;
+    /// 10% to 100% of 32k.
+    const CEILING_BUDGETS: [u32; 6] = [3_276, 6_553, 13_107, 19_660, 26_214, 32_768];
+    const LADDER: [&str; 8] = [
+        "off", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max",
+    ];
+
+    fn ladder_model(support: ThinkingSupport, max_output_tokens: Option<u32>) -> Model {
+        Model {
+            id: "test-model".into(),
+            display_name: None,
+            provider: Arc::from("anthropic"),
+            tier: ModelTier::Medium,
+            family: ModelFamily::Claude,
+            supports_tool_examples_override: None,
+            thinking_override: Some(support),
+            reasoning_efforts: Vec::new(),
+            supports_vision_override: None,
+            supports_fast_override: None,
+            pricing: ModelPricing::default(),
+            discovered_free: false,
+            max_output_tokens,
+            context_window: 200_000,
+            thinking_fields: None,
+        }
+    }
+
+    /// The Lua picker draws its rows straight from this list, so the shape is
+    /// the contract: no thinking means no rows, and a model that refuses to
+    /// turn thinking off never offers `off`.
+    #[test_case(ThinkingSupport::No, &[] ; "no_support_no_rows")]
+    #[test_case(ThinkingSupport::Yes, &LADDER ; "the_whole_ladder")]
+    #[test_case(ThinkingSupport::Required, &LADDER[1..] ; "required_thinking_drops_off")]
+    fn thinking_options_list_what_the_model_accepts(support: ThinkingSupport, expected: &[&str]) {
+        let options = ladder_model(support, Some(ROOMY_OUTPUT)).thinking_options();
+        let names: Vec<&str> = options.iter().map(|option| option.name).collect();
+        assert_eq!(names, expected);
+    }
+
+    /// The numbers are [`Effort::budget`]'s, so what this pins is which ceiling
+    /// the ladder hands it: the declared window, the fallback when there is
+    /// none, and the floor when the window is too small to split.
+    #[test_case(Some(ROOMY_OUTPUT), CEILING_BUDGETS ; "declared_ceiling")]
+    #[test_case(None, CEILING_BUDGETS ; "missing_ceiling_falls_back")]
+    #[test_case(Some(TINY_OUTPUT), [MIN_THINKING_BUDGET; 6] ; "tiny_ceiling_collapses_onto_the_floor")]
+    fn thinking_options_resolve_budgets_against_the_ceiling(
+        max_output_tokens: Option<u32>,
+        levels: [u32; 6],
+    ) {
+        let tokens: Vec<Option<u32>> = ladder_model(ThinkingSupport::Yes, max_output_tokens)
+            .thinking_options()
+            .into_iter()
+            .map(|option| option.tokens)
+            .collect();
+        let expected: Vec<Option<u32>> = [None, None].into_iter().chain(levels.map(Some)).collect();
+        assert_eq!(tokens, expected);
     }
 }

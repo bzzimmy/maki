@@ -88,6 +88,10 @@ Some pickers add extra bindings on top of the defaults:
 | Session Picker | `Ctrl+N` | New session |
 | Session Picker | `Ctrl+R` | Rename session |
 | Session Picker | `Ctrl+D` | Delete session (press twice) |
+| Thinking Picker | `↑`/`↓` | Move between effort levels |
+| Thinking Picker | `0`-`9` | Type a token budget |
+| Thinking Picker | `Enter` | Apply and close |
+| Thinking Picker | `Esc` | Close without changing anything |
 
 ## Plugins
 
@@ -97,6 +101,7 @@ Built-in plugins register these themselves, and your own plugins can add more wi
 |-----|--------|
 | `Ctrl+P` | Browse sessions |
 | `Ctrl+X` | Open tasks |
+| `Alt+T` | Thinking effort |
 
 ## Context Inheritance
 
@@ -127,7 +132,7 @@ If an override leaves Maki stuck (a rebound `Ctrl+C`, a modal that won't close, 
 maki --no-plugins
 ```
 
-Skips user `init.lua` files (global and project) but keeps the Lua host and builtin plugins running, so tools still work. `permissions.toml`, custom commands, and env files load as usual.
+Skips user `init.lua` files (global and project) but keeps the Lua host and builtin plugins running, so tools still work. Custom commands and skills still load, and the project permission rules and env file follow [folder trust](/docs/folder-trust/).
 
 The default keymap lives in Rust, not Lua, so `--no-plugins` never drops it.
 

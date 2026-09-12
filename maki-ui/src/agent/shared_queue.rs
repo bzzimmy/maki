@@ -39,7 +39,6 @@ impl From<Submission> for QueuedMessage {
 
 pub(crate) struct QueuedInput {
     pub(crate) text: String,
-    pub(crate) image_count: usize,
     pub(crate) input: AgentInput,
     pub(crate) run_id: u64,
     /// `true` when the UI already drew the bubble (immediate dispatch).
@@ -334,7 +333,6 @@ mod tests {
     fn queued(text: &str, run_id: u64) -> QueuedInput {
         QueuedInput {
             text: text.into(),
-            image_count: 0,
             input: input(text),
             run_id,
             displayed: false,

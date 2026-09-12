@@ -1,8 +1,8 @@
 //! Queue for messages typed while the agent is busy.
 
-use maki_agent::AgentInput;
+use maki_agent::{AgentInput, ImageSource};
 
-use super::{Action, App, Status, format_with_images};
+use super::{Action, App, Status};
 
 use crate::agent::shared_queue::{Compaction, QueueItem, QueueSender, QueuedInput};
 use crate::components::queue_panel::QueueEntry;
@@ -158,7 +158,6 @@ impl App {
         let input = self.build_agent_input(&msg);
         shared.push(QueueItem::Message(QueuedInput {
             text: msg.text,
-            image_count: msg.images.len(),
             input,
             run_id: self.run_id,
             displayed: false,
@@ -197,18 +196,16 @@ impl App {
     /// queue items start runs without `start_run`, so this is where the app
     /// learns the agent is busy. Immediate-dispatch items skip this event,
     /// so no dedup needed.
-    pub(super) fn on_queue_item_consumed(&mut self, text: &str, image_count: usize) {
+    pub(super) fn on_queue_item_consumed(&mut self, text: String, images: Vec<ImageSource>) {
         self.status = Status::Streaming;
-        self.main_chat()
-            .show_user_message(format_with_images(text, image_count));
+        self.main_chat().show_user_message(text, images);
     }
 
     /// Immediate path: kick off the agent and draw the bubble in the same
     /// frame, so the user sees their message land where it will stay.
     pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<Action> {
-        let display = format_with_images(&msg.text, msg.images.len());
         let input = self.build_agent_input(msg);
-        self.start_run(input, display)
+        self.start_run(input, msg.text.clone())
     }
 
     pub(crate) fn start_mailbox_run(
@@ -233,8 +230,9 @@ impl App {
         self.recoverable_queue.clear();
         self.status = Status::Streaming;
         self.fire_session_autocmd("TurnStart", serde_json::json!({}));
-        if !display.is_empty() {
-            self.main_chat().show_user_message(display);
+        if !display.is_empty() || !input.images.is_empty() {
+            self.main_chat()
+                .show_user_message(display, input.images.clone());
         }
         vec![Action::SendMessage(Box::new(input))]
     }
