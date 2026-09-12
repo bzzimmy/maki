@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use maki_config::ModelPolicy;
-use maki_storage::sessions::{Effort, MIN_THINKING_BUDGET, StoredTokenUsage};
+use maki_storage::sessions::{
+    Effort, MIN_THINKING_BUDGET, StoredTokenUsage, THINKING_ADAPTIVE, THINKING_OFF,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use tracing::debug;
@@ -18,9 +20,7 @@ use crate::model_registry;
 use crate::providers::catalog::{self, CatalogMeta};
 use crate::providers::{anthropic, custom, plugin};
 use crate::spec::{ProviderRegistry, ProviderSpec};
-use crate::types::{
-    EffortDialect, FALLBACK_MAX_THINKING_BUDGET, THINKING_ADAPTIVE, THINKING_OFF, dialect,
-};
+use crate::types::{EffortDialect, FALLBACK_MAX_THINKING_BUDGET, dialect};
 pub use maki_config::providers::ModelTier;
 use maki_config::providers::{ProviderDef, ProvidersConfig, ThinkingFields};
 

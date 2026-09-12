@@ -30,7 +30,7 @@ pub fn run(
     let mut plugin_host = PluginHost::with_jit(Arc::clone(ToolRegistry::global_arc()), !no_jit)
         .context("initialize lua plugin host")?;
 
-    let (config, mut warnings) = super::load_plugins(
+    let (mut config, mut warnings) = super::load_plugins(
         &mut plugin_host,
         no_plugins,
         super::BuiltinFailure::Fatal,
@@ -57,6 +57,7 @@ pub fn run(
 
     let (model, warning) = setup::resolve_model(model_arg.as_deref(), &config.provider, &storage)?;
     super::report_warnings(Vec::from_iter(warning));
+    setup::remember_thinking(&mut config.session_defaults, &storage);
 
     setup::init_logging(&config.storage);
     setup::init_telemetry(&config.telemetry);

@@ -308,10 +308,10 @@ pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[
     ConfigField {
         name: "always_thinking",
         ty: "bool | string",
-        default: ConfigValue::Bool(false),
+        default: ConfigValue::Str("none"),
         min: None,
         env: None,
-        description: "Start every session with extended thinking (true/\"adaptive\", \"off\", an effort level (\"minimal\" to \"max\"), or a token budget)",
+        description: "Pin the thinking level of every new session: true/\"adaptive\", false/\"off\", \"minimal\" to \"max\", or a token budget. Unset, new sessions start at the last `/thinking` level",
     },
 ];
 

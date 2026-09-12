@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 use jiff::Timestamp;
 use maki_storage::intern;
 pub use maki_storage::sessions::Effort;
-use maki_storage::sessions::{MIN_THINKING_BUDGET, StoredThinking, TitleSource};
+use maki_storage::sessions::{MIN_THINKING_BUDGET, StoredThinking, THINKING_ADAPTIVE, TitleSource};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value, json};
 use strum::{Display, IntoStaticStr};
@@ -24,12 +24,6 @@ use crate::image::{Fix, MAX_IMAGES, fix_for_wire};
 use crate::model::Model;
 
 const LOCAL_BUDGET_FIELD: &str = "thinking_budget_tokens";
-
-/// The two thinking modes that are neither an effort level nor a token count.
-/// `Display` and [`Model::thinking_options`] both spell them from here, so the
-/// picker offers exactly the strings the parser accepts.
-pub(crate) const THINKING_OFF: &str = "off";
-pub(crate) const THINKING_ADAPTIVE: &str = "adaptive";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageMediaType {
@@ -1058,12 +1052,7 @@ impl ThinkingConfig {
 
 impl std::fmt::Display for ThinkingConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Off => f.write_str(THINKING_OFF),
-            Self::Adaptive => f.write_str(THINKING_ADAPTIVE),
-            Self::Effort(e) => f.write_str(e.as_str()),
-            Self::Budget(n) => write!(f, "{n}"),
-        }
+        write!(f, "{}", StoredThinking::from(*self))
     }
 }
 

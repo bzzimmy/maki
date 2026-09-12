@@ -6,14 +6,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use color_eyre::Result;
 use color_eyre::eyre::{Context, bail, eyre};
 
-use maki_config::{ModelPolicy, ProviderConfig};
+use maki_config::{ModelPolicy, ProviderConfig, SessionDefaults};
 use maki_providers::model::{Model, ModelError, ModelTier};
 use maki_providers::provider::provider_for_slug;
 use maki_providers::spec::ProviderRegistry;
 use maki_providers::{AgentError, Timeouts, custom, plugin};
 use maki_storage::StateDir;
 use maki_storage::log::RotatingFileWriter;
-use maki_storage::model::read_model;
+use maki_storage::model::{read_model, read_thinking};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::MakeWriter;
@@ -105,6 +105,15 @@ fn fallback_model(provider_config: &ProviderConfig) -> Result<Model> {
 /// that request instead of quietly switching providers.
 fn provider_ready(slug: &str) -> Result<(), AgentError> {
     provider_for_slug(slug, Timeouts::default()).map(drop)
+}
+
+/// `always_thinking` pins the level. Without it, a fresh session starts at
+/// whatever `/thinking` last set, the way the model comes back too; a model
+/// that cannot run that level clamps it when the session loads.
+pub fn remember_thinking(defaults: &mut SessionDefaults, storage: &StateDir) {
+    if defaults.thinking.is_none() {
+        defaults.thinking = read_thinking(storage);
+    }
 }
 
 /// An unknown slug may just mean the models.dev catalog has not been loaded

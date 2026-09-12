@@ -155,7 +155,7 @@ fn build_stack(
         .context("initialize lua plugin host")?;
 
     let (fallback_config, fallback_model) = fallback.unzip();
-    let (config, mut warnings) = super::load_plugins(
+    let (mut config, mut warnings) = super::load_plugins(
         &mut plugin_host,
         cli.no_plugins,
         if fallback_model.is_some() {
@@ -181,6 +181,7 @@ fn build_stack(
     warnings.extend(provider_scripts::startup_warning());
     let commands = discover_commands(cli.no_commands, launch.cwd);
 
+    setup::remember_thinking(&mut config.session_defaults, launch.storage);
     let model_result = setup::resolve_model(cli.model.as_deref(), &config.provider, launch.storage);
     let (model, needs_login) = match (model_result, fallback_model) {
         (Ok((m, warning)), _) => {
