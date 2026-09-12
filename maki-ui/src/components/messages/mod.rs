@@ -1634,14 +1634,19 @@ impl MessagesPanel {
     }
 }
 
-fn message_images(msg: &DisplayMessage) -> impl Iterator<Item = ImageSource> + '_ {
+/// An image the message carries is all there is to see, so a terminal without
+/// graphics gets an `[image]` line in its place. A tool's image already has a
+/// header naming the file above it, so it needs no stand-in.
+fn message_images(
+    msg: &DisplayMessage,
+) -> impl Iterator<Item = (ImageSource, Option<&'static str>)> + '_ {
     msg.images
         .iter()
+        .map(|source| (source.clone(), Some(IMAGE_PLACEHOLDER)))
         .chain(match msg.tool_output.as_deref() {
-            Some(ToolOutput::Image { source, .. }) => Some(source),
+            Some(ToolOutput::Image { source, .. }) => Some((source.clone(), None)),
             _ => None,
         })
-        .cloned()
 }
 
 fn message_style(role: &DisplayRole) -> RoleStyle {

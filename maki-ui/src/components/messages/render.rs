@@ -9,7 +9,6 @@ use ratatui_image::{
     sliced::{SignedPosition, SlicedImage, SlicedProtocol},
 };
 
-use crate::components::IMAGE_PLACEHOLDER;
 use crate::terminal_image::InlineImage;
 
 pub(super) struct RenderCursor {
@@ -45,20 +44,23 @@ impl RenderCursor {
         visible: bool,
         frame: &mut Frame,
     ) {
-        let height = image.height();
-        if self.skip >= height || self.past_bottom() {
-            self.skip = self.skip.saturating_sub(height);
+        if self.past_bottom() {
             return;
         }
-        let protocol = match picker.filter(|_| visible) {
-            Some(picker) => {
-                image.prepare(picker, self.viewport.width);
-                image.protocol(self.viewport.width)
-            }
-            None => None,
-        };
-        let Some(protocol) = protocol else {
-            self.render(&[Line::from(IMAGE_PLACEHOLDER)], height, None, false, frame);
+        // Ask for the pixels before measuring: an image with no fallback row is
+        // zero rows tall until its protocol lands, and the check below reads
+        // zero rows as scrolled past, so it would never get around to asking.
+        if let Some(picker) = picker.filter(|_| visible) {
+            image.prepare(picker, self.viewport.width);
+        }
+        let height = image.height();
+        if self.skip >= height {
+            self.skip -= height;
+            return;
+        }
+        let Some(protocol) = image.protocol(self.viewport.width) else {
+            let fallback = image.fallback().map(Line::from);
+            self.render(fallback.as_slice(), height, None, false, frame);
             return;
         };
         let visible_rows = height

@@ -15,20 +15,23 @@ use std::ops::Range;
 use std::time::Duration;
 use test_case::test_case;
 
+const UNDECODABLE_IMAGE: &str = "invalid image";
+const VIEW_WIDTH: u16 = 80;
+const VIEW_HEIGHT: u16 = 24;
+
 #[test_case(false ; "live")]
 #[test_case(true ; "loaded")]
 fn tool_images_survive_snapshot_rebuilds(loaded: bool) {
     const TOOL_ID: &str = "image_tool";
     const CAPTION: &str = "image caption";
-    const WIDTH: u16 = 80;
     const SAME_IMAGE: &str = "a rebuild must reuse the image, not decode it again";
-    const FALLBACK_ROW: &str = "an image with no protocol still owns its row";
+    const NO_FALLBACK_ROW: &str = "the header names the image, so an undrawable one takes no row";
 
-    let source = ImageSource::new(ImageMediaType::Png, Arc::from("invalid image"));
+    let source = ImageSource::new(ImageMediaType::Png, Arc::from(UNDECODABLE_IMAGE));
     let mut panel = panel_with_tools(&[(TOOL_ID, BASH_TOOL_NAME)]);
     // No picker, so nothing is ever decoded and the test never touches the
     // decode thread. What it watches is the segment keeping its image across
-    // rebuilds, and the text fallback in its place.
+    // rebuilds, without leaving anything behind in the transcript.
     panel.image_picker = None;
     rebuild(&mut panel);
     panel.tool_done(ToolDoneEvent {
@@ -43,7 +46,7 @@ fn tool_images_survive_snapshot_rebuilds(loaded: bool) {
         rebuild(&mut panel);
     }
     panel.tool_snapshot(TOOL_ID, BufferSnapshot::plain_text(CAPTION.into()), None);
-    let terminal = render(&mut panel, WIDTH, 24);
+    let terminal = render(&mut panel, VIEW_WIDTH, VIEW_HEIGHT);
     let index = panel.cache.find_by_tool_id(TOOL_ID).unwrap();
     let segment = panel.cache.get(index).unwrap();
     assert_eq!(segment.images.len(), 1);
@@ -52,11 +55,45 @@ fn tool_images_survive_snapshot_rebuilds(loaded: bool) {
         "{SAME_IMAGE}"
     );
     assert_eq!(
-        segment.height(WIDTH - 1),
-        segment.text_height(WIDTH - 1) + 1,
+        image_fallback(segment, &terminal),
+        (0, false),
+        "{NO_FALLBACK_ROW}"
+    );
+}
+
+#[test]
+fn pasted_image_falls_back_to_text() {
+    const PROMPT: &str = "what is in this picture";
+    const FALLBACK_ROW: &str = "nothing else names this image, so it must announce itself";
+
+    let mut panel = panel_with_tools(&[]);
+    panel.image_picker = None;
+    panel.push(DisplayMessage::with_images(
+        DisplayRole::User,
+        PROMPT.into(),
+        vec![ImageSource::new(
+            ImageMediaType::Png,
+            Arc::from(UNDECODABLE_IMAGE),
+        )],
+    ));
+    let terminal = render(&mut panel, VIEW_WIDTH, VIEW_HEIGHT);
+    let segment = panel.cache.get(0).unwrap();
+    assert_eq!(
+        image_fallback(segment, &terminal),
+        (1, true),
         "{FALLBACK_ROW}"
     );
-    assert!(buffer_text(&terminal).contains(IMAGE_PLACEHOLDER));
+}
+
+/// Rows the image adds on top of the text, and whether the `[image]` line made
+/// it to the screen. The same fallback feeds both, so they have to agree. The
+/// panel lays text out one column short of the terminal, the scrollbar owns it.
+fn image_fallback(segment: &Segment, terminal: &ratatui::Terminal<TestBackend>) -> (u16, bool) {
+    let width = terminal.backend().buffer().area.width - 1;
+    (
+        segment.height(width) - segment.text_height(width),
+        buffer_text(terminal).contains(IMAGE_PLACEHOLDER),
+    )
 }
 
 fn snap_line(text: &str) -> SnapshotLine {

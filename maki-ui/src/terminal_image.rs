@@ -120,13 +120,18 @@ enum ImageState {
 pub(crate) struct InlineImage {
     source: ImageSource,
     state: ImageState,
+    /// The line a terminal without graphics gets instead of the pixels, or
+    /// `None` where the text around the image already names it. Both the row
+    /// count and the row itself read this, so layout and paint cannot disagree.
+    fallback: Option<&'static str>,
 }
 
 impl InlineImage {
-    pub fn new(source: ImageSource) -> Self {
+    pub fn new(source: ImageSource, fallback: Option<&'static str>) -> Self {
         Self {
             source,
-            state: ImageState::Idle { height: 1 },
+            state: ImageState::Idle { height: 0 },
+            fallback,
         }
     }
 
@@ -136,6 +141,7 @@ impl InlineImage {
         Ok(Self {
             source,
             state: ImageState::Ready { width, protocol },
+            fallback: None,
         })
     }
 
@@ -143,12 +149,17 @@ impl InlineImage {
         &self.source
     }
 
+    pub fn fallback(&self) -> Option<&'static str> {
+        self.fallback
+    }
+
     pub fn height(&self) -> u16 {
-        match &self.state {
+        let pixels = match &self.state {
             ImageState::Ready { protocol, .. } => protocol.size().height,
             ImageState::Pending { height, .. } | ImageState::Idle { height } => *height,
-            ImageState::Failed => 1,
-        }
+            ImageState::Failed => 0,
+        };
+        pixels.max(u16::from(self.fallback.is_some()))
     }
 
     pub fn release(&mut self) {
@@ -254,7 +265,7 @@ mod tests {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use color_eyre::eyre::Result;
     use image::{DynamicImage, ImageFormat};
-    use maki_providers::{ImageMediaType, ImageSource};
+    use maki_providers::{IMAGE_PLACEHOLDER, ImageMediaType, ImageSource};
     use ratatui::layout::Size;
     use ratatui_image::{
         FontSize,
@@ -320,7 +331,7 @@ mod tests {
         #[allow(deprecated)]
         let mut picker = Picker::from_fontsize(FontSize::new(1, 1));
         picker.set_protocol_type(ProtocolType::Halfblocks);
-        let mut image = InlineImage::new(source.clone());
+        let mut image = InlineImage::new(source.clone(), Some(IMAGE_PLACEHOLDER));
         image.prepare(&picker, 0);
         assert!(
             matches!(image.state, ImageState::Idle { .. }),

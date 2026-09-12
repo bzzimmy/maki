@@ -1080,7 +1080,7 @@ pub struct UiConfig {
 
     #[config(
         default = true,
-        desc = "Render inline images in terminals with graphics support, falling back to an [image] line when off"
+        desc = "Render inline images in terminals with graphics support, falling back to an [image] line where nothing else names the image"
     )]
     pub inline_images: bool,
 

@@ -126,14 +126,17 @@ impl Segment {
             })
     }
 
-    pub fn set_images(&mut self, sources: impl Iterator<Item = ImageSource>) {
+    pub fn set_images(
+        &mut self,
+        sources: impl Iterator<Item = (ImageSource, Option<&'static str>)>,
+    ) {
         let mut previous = mem::take(&mut self.images).into_iter();
         self.images = sources
-            .map(|source| {
+            .map(|(source, fallback)| {
                 previous
                     .next()
                     .filter(|image| Arc::ptr_eq(&image.source().data, &source.data))
-                    .unwrap_or_else(|| InlineImage::new(source))
+                    .unwrap_or_else(|| InlineImage::new(source, fallback))
             })
             .collect();
     }
