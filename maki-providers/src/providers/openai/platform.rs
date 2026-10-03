@@ -60,6 +60,8 @@ const PLAN_MODELS_PATH: &str = "/models?client_version=";
 const LISTED_VISIBILITY: &str = "list";
 const ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 const FAST_SERVICE_TIER: &str = "priority";
+const PROMPT_CACHE_KEY_FIELD: &str = "prompt_cache_key";
+const SESSION_AFFINITY_HEADERS: [&str; 2] = ["session-id", "x-client-request-id"];
 const IMAGE_MODALITY: &str = "image";
 const EMPTY_USAGE_ERROR: &str =
     "OpenAI usage response contained no plan or rate limits; the endpoint schema likely changed";
@@ -207,6 +209,10 @@ fn plan_account_id(auth: &ResolvedAuth) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+fn is_coding_plan(auth: &ResolvedAuth) -> bool {
+    auth.base_url.as_deref() == Some(auth::CODING_PLAN_BASE_URL)
+}
+
 /// Fast is a subscription perk, so it takes a coding-plan login *and* a listing
 /// that was fetched for that same account: switch accounts and yesterday's
 /// answer is worthless. `Pending` is the honest answer while the listing is
@@ -217,7 +223,7 @@ fn supports_plan_fast(
     discovery_complete: bool,
 ) -> FastSupport {
     let account_id = auth
-        .filter(|auth| auth.base_url.as_deref() == Some(auth::CODING_PLAN_BASE_URL))
+        .filter(|auth| is_coding_plan(auth))
         .and_then(plan_account_id);
     let Some(account_id) = account_id else {
         return FastSupport::Unsupported;
@@ -246,6 +252,18 @@ fn apply_plan_fast(
     let complete = model_registry::discovery_complete(&CONFIG.slug);
     if fast && supports_plan_fast(Some(auth), info, complete) == FastSupport::Supported {
         body["service_tier"] = FAST_SERVICE_TIER.into();
+    }
+}
+
+/// Without a stable key the backend spreads a session's requests over cache
+/// shards, so an unchanged prefix still misses most of the time.
+fn apply_session_affinity(body: &mut Value, auth: &mut ResolvedAuth, session: &SessionRef) {
+    if !is_coding_plan(auth) {
+        return;
+    }
+    body[PROMPT_CACHE_KEY_FIELD] = session.as_str().into();
+    for header in SESSION_AFFINITY_HEADERS {
+        auth.set_header(header, session.to_string());
     }
 }
 
@@ -500,7 +518,7 @@ impl Provider for OpenAi {
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
-        _session_id: Option<&'a SessionRef>,
+        session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let mut buf = String::new();
@@ -516,8 +534,11 @@ impl Provider for OpenAi {
                 let stream_timeout = self.compat.stream_timeout();
                 return self
                     .with_oauth_retry(|| async {
-                        let codex_auth = self.codex_auth()?;
+                        let mut codex_auth = self.codex_auth()?;
                         let mut body = super::responses::build_body(model, messages, system, tools);
+                        if let Some(session) = session_id {
+                            apply_session_affinity(&mut body, &mut codex_auth, session);
+                        }
                         super::responses::apply_responses_reasoning(
                             &mut body,
                             opts.thinking,
@@ -966,6 +987,26 @@ mod tests {
         );
         body.as_object_mut().unwrap().remove("service_tier");
         assert_eq!(body, standard);
+    }
+
+    #[test_case(true ; "coding_plan")]
+    #[test_case(false ; "api_key")]
+    fn session_affinity_keys_only_coding_plan_requests(oauth: bool) {
+        let session = SessionRef::generate();
+        let expected = oauth.then_some(session.as_str());
+        let mut auth = plan_auth(oauth, Some(ACCOUNT_ID));
+        let mut body = json!({});
+        apply_session_affinity(&mut body, &mut auth, &session);
+        assert_eq!(body[PROMPT_CACHE_KEY_FIELD].as_str(), expected);
+        for header in SESSION_AFFINITY_HEADERS {
+            let values: Vec<&str> = auth
+                .headers
+                .iter()
+                .filter(|(name, _)| name == header)
+                .map(|(_, value)| value.as_str())
+                .collect();
+            assert_eq!(values, Vec::from_iter(expected), "{header}");
+        }
     }
 
     #[test_case("{}")]
