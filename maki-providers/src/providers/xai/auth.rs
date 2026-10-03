@@ -2,7 +2,7 @@ use std::io;
 use std::path::PathBuf;
 use std::str;
 use std::time::{Duration, Instant};
-use std::{env, fs, thread};
+use std::{fs, thread};
 
 use isahc::ReadResponseExt;
 use isahc::config::{Configurable, RedirectPolicy, VersionNegotiation};
@@ -31,6 +31,7 @@ pub(crate) const API_KEY_ENV: &str = "XAI_API_KEY";
 pub(crate) const TOKEN_AUTH: &str = "xai-grok-cli";
 pub(crate) const AUTHENTICATE_RESPONSE: &str = "authenticate-response";
 pub(crate) const CLIENT_IDENTIFIER: &str = "maki";
+pub(crate) const GROK_CLI_VERSION: &str = "1.0.13";
 pub(crate) const CLI_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 
 const CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
@@ -104,7 +105,7 @@ fn oauth_form_headers() -> Vec<(&'static str, String)> {
         ("content-type", "application/x-www-form-urlencoded".into()),
         ("accept", "application/json".into()),
         ("user-agent", crate::providers::user_agent().into()),
-        ("x-grok-client-version", env!("CARGO_PKG_VERSION").into()),
+        ("x-grok-client-version", GROK_CLI_VERSION.into()),
         ("x-grok-client-surface", "cli".into()),
     ]
 }
@@ -181,10 +182,7 @@ fn oauth_headers(access: &str) -> Vec<(String, String)> {
             AUTHENTICATE_RESPONSE.into(),
         ),
         ("x-grok-client-identifier".into(), CLIENT_IDENTIFIER.into()),
-        (
-            "x-grok-client-version".into(),
-            env!("CARGO_PKG_VERSION").into(),
-        ),
+        ("x-grok-client-version".into(), GROK_CLI_VERSION.into()),
         ("x-grok-client-mode".into(), client_mode().into()),
     ]
 }
